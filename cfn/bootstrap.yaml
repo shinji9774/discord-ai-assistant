@@ -1,0 +1,82 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: discord-ai-assistant の土台（ECR リポジトリ、GitHub OIDC、リリース用ロール）。管理者が最初に 1 回だけ作る
+
+Parameters:
+  GitHubRepository:
+    Type: String
+    Description: リリースを実行する GitHub リポジトリ（owner/repo 形式）
+    AllowedPattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+  RepositoryName:
+    Type: String
+    Description: ECR リポジトリ名
+    Default: lambda-container/discord-ai-assistant
+  AppStackName:
+    Type: String
+    Description: リリースが change set を作るアプリ用スタックの名前（app.yaml）
+    Default: discord-ai-assistant
+  GitHubOidcProviderArn:
+    Type: String
+    Description: GitHub OIDC プロバイダの ARN
+
+Resources:
+  Repository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref RepositoryName
+      ImageTagMutability: IMMUTABLE
+
+  ReleaseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCloudFormationReadOnlyAccess
+        - arn:aws:iam::aws:policy/IAMReadOnlyAccess
+      # タグ v* の push で起動したワークフローだけが引き受けられる
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRoleWithWebIdentity
+            Principal:
+              Federated: !Ref GitHubOidcProviderArn
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepository}:ref:refs/tags/v*
+      Policies:
+        - PolicyName: release
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: EcrLogin
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: EcrPush
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                  # AWS の ECR ユーザーガイドが push に必要な権限として挙げている（buildx は push 前に manifest を確認する）
+                  # https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-push-iam.html
+                  - ecr:BatchGetImage
+                Resource: !GetAtt Repository.Arn
+              - Sid: CreateChangeSetForAppStack
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateChangeSet
+                Resource:
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AppStackName}/*
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/*/*
+
+Outputs:
+  RepositoryUri:
+    Description: ECR リポジトリの URI
+    Value: !GetAtt Repository.RepositoryUri
+  ReleaseRoleArn:
+    Description: リリース用ロールの ARN
+    Value: !GetAtt ReleaseRole.Arn

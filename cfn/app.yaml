@@ -1,0 +1,163 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: discord-ai-assistant のアプリ本体（ingress と worker の Lambda 関数、Function URL）
+
+Parameters:
+  ImageUri:
+    Type: String
+    Description: ECR のイメージ URI（タグか digest つき）
+  DiscordPublicKey:
+    Type: String
+    Description: Discord アプリの公開鍵（16 進数）
+  BedrockModelId:
+    Type: String
+    Description: Bedrock の推論プロファイル ID
+    Default: global.anthropic.claude-haiku-5-5
+  BotTokenParameterName:
+    Type: String
+    Description: bot トークンを入れた SSM の SecureString のパラメータ名
+    Default: /discord-ai-assistant/bot-token
+    AllowedPattern: ^/.+
+
+Resources:
+  IngressLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-ingress
+      RetentionInDays: 30
+
+  WorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-worker
+      RetentionInDays: 30
+
+  IngressRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service: lambda.amazonaws.com
+      Policies:
+        - PolicyName: ingress
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: WriteOwnLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt IngressLogGroup.Arn
+              - Sid: InvokeWorker
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-worker
+
+  WorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service: lambda.amazonaws.com
+      Policies:
+        - PolicyName: worker
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: WriteOwnLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt WorkerLogGroup.Arn
+              - Sid: InvokeBedrockModel
+                Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource: "*"
+              - Sid: ReadBotToken
+                Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${BotTokenParameterName}
+
+  IngressFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: IngressLogGroup
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-ingress
+      PackageType: Image
+      Code:
+        ImageUri: !Ref ImageUri
+      ImageConfig:
+        EntryPoint: ["/ingress"]
+      Architectures: [x86_64]
+      Timeout: 3
+      MemorySize: 256
+      #ReservedConcurrentExecutions: 10
+      Role: !GetAtt IngressRole.Arn
+      Environment:
+        Variables:
+          DISCORD_PUBLIC_KEY: !Ref DiscordPublicKey
+          WORKER_FUNCTION_NAME: !Ref WorkerFunction
+
+  WorkerFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: WorkerLogGroup
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-worker
+      PackageType: Image
+      Code:
+        ImageUri: !Ref ImageUri
+      ImageConfig:
+        EntryPoint: ["/worker"]
+      Architectures: [x86_64]
+      Timeout: 600
+      MemorySize: 256
+      Role: !GetAtt WorkerRole.Arn
+      Environment:
+        Variables:
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          BOT_TOKEN_PARAMETER_NAME: !Ref BotTokenParameterName
+
+  # 非同期呼び出しの再試行を止める（同じコマンドを二重に実行しない）
+  WorkerEventInvokeConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref WorkerFunction
+      Qualifier: $LATEST
+      MaximumRetryAttempts: 0
+
+  IngressFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt IngressFunction.Arn
+      AuthType: NONE
+
+  # Function URL（AuthType NONE）は 2 つの権限がそろって初めて公開される
+  IngressInvokeFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref IngressFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
+  IngressInvokeFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref IngressFunction
+      Action: lambda:InvokeFunction
+      Principal: "*"
+      InvokedViaFunctionUrl: true
+
+Outputs:
+  FunctionUrl:
+    Description: Discord の Interactions Endpoint URL に設定する URL
+    Value: !GetAtt IngressFunctionUrl.FunctionUrl

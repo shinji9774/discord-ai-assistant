@@ -1,0 +1,69 @@
+IMAGE ?= discord-ai-assistant:latest
+IT_IMAGE ?= discord-ai-assistant:it
+
+# go.mod の go 行から golang イメージのバージョンを決める
+GO_VERSION := $(shell awk '$$1 == "go" { print $$2 }' go.mod)
+GO_IMAGE ?= golang:$(GO_VERSION)
+
+# golang コンテナ内の作業ディレクトリとキャッシュ。キャッシュは名前付きボリュームで持ち回る
+CONTAINER_WORKDIR := /src
+CONTAINER_CACHE_DIR := /cache
+GO_CACHE_VOLUME ?= discord-ai-assistant-go-cache
+DOCKER_SOCKET := /var/run/docker.sock
+# --network host のコンテナからは、兄弟コンテナの公開ポートに localhost で届く
+TESTCONTAINERS_HOST := localhost
+DOCKER_SOCKET_GID := $(shell stat -c %g $(DOCKER_SOCKET) 2>/dev/null)
+
+# ホストの uid/gid で動かし、リポジトリに root 所有のファイルを残さない
+DOCKER_GO_RUN = docker run --rm \
+	--user $(shell id -u):$(shell id -g) \
+	--group-add $(DOCKER_SOCKET_GID) \
+	--network host \
+	-v $(CURDIR):$(CONTAINER_WORKDIR) -w $(CONTAINER_WORKDIR) \
+	-v $(GO_CACHE_VOLUME):$(CONTAINER_CACHE_DIR) \
+	-v $(DOCKER_SOCKET):$(DOCKER_SOCKET) \
+	-e HOME=$(CONTAINER_CACHE_DIR)/home \
+	-e GOMODCACHE=$(CONTAINER_CACHE_DIR)/mod \
+	-e GOCACHE=$(CONTAINER_CACHE_DIR)/build \
+	-e IT_IMAGE=$(IT_IMAGE) \
+	-e TESTCONTAINERS_HOST_OVERRIDE=$(TESTCONTAINERS_HOST) \
+	$(GO_IMAGE)
+
+.PHONY: vet test image image-it test-it it docker-test docker-test-it docker-cache-volume register
+
+vet:
+	go vet ./...
+
+test:
+	go test -v ./...
+
+image:
+	docker build --target runtime -t $(IMAGE) .
+
+image-it:
+	docker build --target it -t $(IT_IMAGE) .
+
+# イメージは事前に image-it か別の手段で作っておく
+test-it:
+	IT_IMAGE=$(IT_IMAGE) go test -v -tags integration -count=1 ./test/integration/...
+
+it: image-it test-it
+
+# 新規ボリュームは root 所有なので、ホストの uid/gid で書けるようにする
+docker-cache-volume:
+	docker run --rm --user 0 -v $(GO_CACHE_VOLUME):$(CONTAINER_CACHE_DIR) $(GO_IMAGE) \
+		chown $(shell id -u):$(shell id -g) $(CONTAINER_CACHE_DIR)
+
+docker-remove-cache-volume:
+	docker volume rm $(GO_CACHE_VOLUME) >/dev/null 2>&1 || true
+
+docker-test: docker-cache-volume
+	$(DOCKER_GO_RUN) make vet test
+
+# イメージは事前に make image-it でホスト側に作っておく
+docker-test-it: docker-cache-volume
+	$(DOCKER_GO_RUN) make test-it
+
+# 秘密情報は -e 名前 で渡し、値をコマンドラインに展開しない
+register:
+	docker run --rm -e DISCORD_APPLICATION_ID -e DISCORD_BOT_TOKEN --entrypoint /register $(IMAGE)

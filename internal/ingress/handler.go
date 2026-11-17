@@ -1,0 +1,162 @@
+package ingress
+
+import (
+	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"strings"
+
+	"github.com/aws/aws-lambda-go/events"
+
+	"discord-ai-assistant/internal/command"
+)
+
+const (
+	signatureHeader = "x-signature-ed25519"
+	timestampHeader = "x-signature-timestamp"
+
+	interactionTypePing    = 1
+	interactionTypeCommand = 2
+
+	contentTypeHeader = "Content-Type"
+	contentTypeJSON   = "application/json"
+
+	invalidSignatureBody   = "invalid request signature"
+	invalidRequestBody     = "invalid request body"
+	unsupportedTypeBody    = "unsupported interaction type"
+	pongBody               = `{"type":1}`
+	deferredBody           = `{"type":5}`
+	logWorkerInvokeFailed  = "worker invoke failed"
+	responseTypeChannelMsg = 4
+)
+
+// interaction は Discord の interaction のうち、振り分けに使う最小の部分。
+type interaction struct {
+	Type          int    `json:"type"`
+	ApplicationID string `json:"application_id"`
+	Token         string `json:"token"`
+	ChannelID     string `json:"channel_id"`
+	Data          struct {
+		Name    string `json:"name"`
+		Options []struct {
+			Name  string          `json:"name"`
+			Value json.RawMessage `json:"value"`
+		} `json:"options"`
+	} `json:"data"`
+}
+
+type messageResponse struct {
+	Type int `json:"type"`
+	Data struct {
+		Content string `json:"content"`
+	} `json:"data"`
+}
+
+// Handler は Discord の interaction を受け、署名検証と振り分けを行う。
+type Handler struct {
+	publicKey ed25519.PublicKey
+	invoker   WorkerInvoker
+	logger    *slog.Logger
+}
+
+func NewHandler(publicKey ed25519.PublicKey, invoker WorkerInvoker, logger *slog.Logger) *Handler {
+	return &Handler{publicKey: publicKey, invoker: invoker, logger: logger}
+}
+
+// Handle は署名を検証したうえで、interaction の種類に応じた応答を返す。
+func (h *Handler) Handle(ctx context.Context, req events.LambdaFunctionURLRequest) (events.LambdaFunctionURLResponse, error) {
+	body, err := requestBody(req)
+	if err != nil {
+		return textResponse(http.StatusUnauthorized, invalidSignatureBody), nil
+	}
+	signature := headerValue(req.Headers, signatureHeader)
+	timestamp := headerValue(req.Headers, timestampHeader)
+	if !VerifySignature(h.publicKey, signature, timestamp, body) {
+		return textResponse(http.StatusUnauthorized, invalidSignatureBody), nil
+	}
+
+	var in interaction
+	if err := json.Unmarshal(body, &in); err != nil {
+		return textResponse(http.StatusBadRequest, invalidRequestBody), nil
+	}
+	switch in.Type {
+	case interactionTypePing:
+		return jsonResponse(pongBody), nil
+	case interactionTypeCommand:
+		return h.handleCommand(ctx, in), nil
+	default:
+		return textResponse(http.StatusBadRequest, unsupportedTypeBody), nil
+	}
+}
+
+func (h *Handler) handleCommand(ctx context.Context, in interaction) events.LambdaFunctionURLResponse {
+	inv := toInvocation(in)
+	if err := h.invoker.InvokeAsync(ctx, inv); err != nil {
+		h.logger.Error(logWorkerInvokeFailed, "command", inv.CommandName, "error", err)
+		return jsonResponse(failureBody())
+	}
+	return jsonResponse(deferredBody)
+}
+
+func toInvocation(in interaction) command.Invocation {
+	options := make(map[string]string, len(in.Data.Options))
+	for _, o := range in.Data.Options {
+		options[o.Name] = optionValue(o.Value)
+	}
+	return command.Invocation{
+		ApplicationID:    in.ApplicationID,
+		InteractionToken: in.Token,
+		ChannelID:        in.ChannelID,
+		CommandName:      in.Data.Name,
+		Options:          options,
+	}
+}
+
+// optionValue は文字列をそのまま、ほかの型を JSON の表記で返す。
+func optionValue(raw json.RawMessage) string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	return string(raw)
+}
+
+func failureBody() string {
+	var msg messageResponse
+	msg.Type = responseTypeChannelMsg
+	msg.Data.Content = command.FailureMessage
+	b, _ := json.Marshal(msg)
+	return string(b)
+}
+
+func requestBody(req events.LambdaFunctionURLRequest) ([]byte, error) {
+	if !req.IsBase64Encoded {
+		return []byte(req.Body), nil
+	}
+	return base64.StdEncoding.DecodeString(req.Body)
+}
+
+// headerValue は大文字小文字を区別せずにヘッダの値を探す。
+func headerValue(headers map[string]string, name string) string {
+	for k, v := range headers {
+		if strings.EqualFold(k, name) {
+			return v
+		}
+	}
+	return ""
+}
+
+func jsonResponse(body string) events.LambdaFunctionURLResponse {
+	return events.LambdaFunctionURLResponse{
+		StatusCode: http.StatusOK,
+		Headers:    map[string]string{contentTypeHeader: contentTypeJSON},
+		Body:       body,
+	}
+}
+
+func textResponse(status int, body string) events.LambdaFunctionURLResponse {
+	return events.LambdaFunctionURLResponse{StatusCode: status, Body: body}
+}

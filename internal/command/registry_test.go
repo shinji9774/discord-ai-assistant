@@ -1,0 +1,93 @@
+package command_test
+
+import (
+	"context"
+	"reflect"
+	"testing"
+
+	"github.com/disgoorg/disgo/discord"
+
+	"discord-ai-assistant/internal/command"
+)
+
+// stubCommand は名前だけを持つ Command の実装。
+type stubCommand struct {
+	name string
+}
+
+func (s stubCommand) Definition() discord.SlashCommandCreate {
+	return discord.SlashCommandCreate{Name: s.name}
+}
+
+func (s stubCommand) Execute(ctx context.Context, inv command.Invocation) (command.Result, error) {
+	return command.Result{}, nil
+}
+
+// findResult は Find の戻り値の組を 1 回で比較するための入れ物。
+type findResult struct {
+	Command command.Command
+	Found   bool
+}
+
+func capturePanic(f func()) (recovered any) {
+	defer func() { recovered = recover() }()
+	f()
+	return nil
+}
+
+func definitionNames(definitions []discord.ApplicationCommandCreate) []string {
+	names := make([]string, 0, len(definitions))
+	for _, d := range definitions {
+		names = append(names, d.CommandName())
+	}
+	return names
+}
+
+// 条件: translate と ask を登録し、ask を検索する。
+// 内容: ask の stub と true が返る。
+func TestFind_RegisteredName_ReturnsCommand(t *testing.T) {
+	translate, ask := stubCommand{name: "translate"}, stubCommand{name: "ask"}
+	registry := command.NewRegistry(translate, ask)
+
+	got, found := registry.Find("ask")
+
+	if want := (findResult{Command: ask, Found: true}); !reflect.DeepEqual(findResult{got, found}, want) {
+		t.Errorf("Find() = %+v, want %+v", findResult{got, found}, want)
+	}
+}
+
+// 条件: 未登録の名前を検索する。
+// 内容: nil と false が返る。
+func TestFind_UnknownName_ReturnsFalse(t *testing.T) {
+	registry := command.NewRegistry(stubCommand{name: "translate"})
+
+	got, found := registry.Find("unknown")
+
+	if want := (findResult{}); !reflect.DeepEqual(findResult{got, found}, want) {
+		t.Errorf("Find() = %+v, want %+v", findResult{got, found}, want)
+	}
+}
+
+// 条件: translate、ask の順で登録する。
+// 内容: 定義の名前の列が登録順 ["translate", "ask"] になる。
+func TestDefinitions_TwoCommands_ReturnsDefinitionsInRegistrationOrder(t *testing.T) {
+	registry := command.NewRegistry(stubCommand{name: "translate"}, stubCommand{name: "ask"})
+
+	got := definitionNames(registry.Definitions())
+
+	if want := []string{"translate", "ask"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Definitions() names = %v, want %v", got, want)
+	}
+}
+
+// 条件: 同じ名前のコマンドを 2 つ登録する。
+// 内容: NewRegistry が panic する。
+func TestNewRegistry_DuplicateName_Panics(t *testing.T) {
+	a, b := stubCommand{name: "ask"}, stubCommand{name: "ask"}
+
+	recovered := capturePanic(func() { command.NewRegistry(a, b) })
+
+	if recovered == nil {
+		t.Error("NewRegistry() did not panic on duplicate name")
+	}
+}
