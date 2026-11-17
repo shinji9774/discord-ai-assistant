@@ -102,12 +102,19 @@ ECR リポジトリ、リリース用ロールを作る。管理者が最初に 
 
 | パラメータ | 内容 | 既定値 |
 |---|---|---|
-| `GitHubRepository` | リリースを実行する GitHub リポジトリ（`owner/repo` 形式）。必須 | なし |
+| `GitHubRepository` | リリースを実行する GitHub リポジトリ（`owner@owner_id/repo@repo_id` 形式）。必須 | なし |
 | `RepositoryName` | ECR リポジトリ名 | `discord-ai-assistant` |
 | `AppStackName` | アプリ用スタックの名前（`cfn/app.yaml`） | `discord-ai-assistant` |
 | `GitHubOidcProviderArn` | GitHub OIDC プロバイダの ARN。必須 | なし |
 
-1. スタックを作る。`<owner>/<repo>` は自分の GitHub リポジトリに置き換える。
+1. Immutable Subject Claim を有効にする。2026 年 7 月 15 日より前に作成したリポジトリでは、リポジトリまたは organization の Actions OIDC 設定で有効にする。
+2. GitHub CLI で owner ID と repository ID を調べる。
+
+   ```sh
+   gh api repos/<owner>/<repo> --jq '"\(.owner.login)@\(.owner.id)/\(.name)@\(.id)"'
+   ```
+
+3. スタックを作る。`<owner>@<owner_id>/<repo>@<repo_id>` は直前のコマンドの出力に置き換える。既存のスタックを更新する場合も同じコマンドで `GitHubRepository` の値を更新する。
 
    ```sh
    aws cloudformation deploy \
@@ -115,10 +122,10 @@ ECR リポジトリ、リリース用ロールを作る。管理者が最初に 
      --stack-name discord-ai-assistant-bootstrap \
      --template-file cfn/bootstrap.yaml \
      --capabilities CAPABILITY_IAM \
-     --parameter-overrides 'GitHubRepository=<owner>/<repo>,GitHubOidcProviderArn=<GitHub OIDC プロバイダの ARN>'
+     --parameter-overrides 'GitHubRepository=<owner>@<owner_id>/<repo>@<repo_id>' 'GitHubOidcProviderArn=<GitHub OIDC プロバイダの ARN>'
    ```
 
-2. 出力を取得する。`RepositoryUri` と `ReleaseRoleArn` を控える。
+4. 出力を取得する。`RepositoryUri` と `ReleaseRoleArn` を控える。
 
    ```sh
    aws cloudformation describe-stacks \

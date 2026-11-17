@@ -4,8 +4,8 @@ Description: discord-ai-assistant の土台（ECR リポジトリ、GitHub OIDC�
 Parameters:
   GitHubRepository:
     Type: String
-    Description: リリースを実行する GitHub リポジトリ（owner/repo 形式）
-    AllowedPattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+    Description: リリースを実行する GitHub リポジトリ（owner@owner_id/repo@repo_id 形式）
+    AllowedPattern: ^[A-Za-z0-9_.-]+@[0-9]+/[A-Za-z0-9_.-]+@[0-9]+$
   RepositoryName:
     Type: String
     Description: ECR リポジトリ名
