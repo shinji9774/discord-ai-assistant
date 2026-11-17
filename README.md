@@ -82,16 +82,16 @@ ingress に reserved concurrency 10 を設定する。このとき、未予約�
    ```sh
    aws bedrock get-foundation-model-availability \
      --region ap-northeast-1 \
-     --model-id anthropic.claude-haiku-5-5 \
+     --model-id amazon.nova-2-lite-v1:0 \
      --query 'agreementAvailability.status'
    ```
 
-5. 本 bot は推論プロファイル `global.anthropic.claude-haiku-5-5` を使う。次のコマンドで一覧に出ることを確認する。
+5. 本 bot は推論プロファイル `jp.amazon.nova-2-lite-v1:0` を使う。次のコマンドで一覧に出ることを確認する。
 
    ```sh
    aws bedrock list-inference-profiles \
      --region ap-northeast-1 \
-     --query "inferenceProfileSummaries[?inferenceProfileId=='global.anthropic.claude-haiku-5-5'].inferenceProfileId"
+     --query "inferenceProfileSummaries[?inferenceProfileId=='jp.amazon.nova-2-lite-v1:0'].inferenceProfileId"
    ```
 
 ### 2-2. `cfn/bootstrap.yaml` のスタックを作る

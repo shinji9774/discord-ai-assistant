@@ -11,7 +11,7 @@ Parameters:
   BedrockModelId:
     Type: String
     Description: Bedrock の推論プロファイル ID
-    Default: global.anthropic.claude-haiku-5-5
+    Default: jp.amazon.nova-2-lite-v1:0
   BotTokenParameterName:
     Type: String
     Description: bot トークンを入れた SSM の SecureString のパラメータ名

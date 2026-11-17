@@ -40,7 +40,7 @@ const (
 
 	botTokenParameterName = "/discord-ai-assistant/bot-token"
 	botTokenValue         = "it-bot-token"
-	bedrockModelID        = "global.anthropic.claude-haiku-5-5"
+	bedrockModelID        = "jp.amazon.nova-2-lite-v1:0"
 	workerFunctionName    = "worker"
 )
 

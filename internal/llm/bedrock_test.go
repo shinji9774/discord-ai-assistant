@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	testModelID = "global.anthropic.claude-haiku-5-5"
+	testModelID = "jp.amazon.nova-2-lite-v1:0"
 	testRegion  = "ap-northeast-1"
 )
 
@@ -75,7 +75,7 @@ func TestGenerate_Always_SendsSystemUserTextAndMaxTokensToModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
-	want := []bedrockfake.Request{{ModelID: "global.anthropic.claude-haiku-5-5", System: "sys", UserText: "Hello", MaxTokens: 16000}}
+	want := []bedrockfake.Request{{ModelID: "jp.amazon.nova-2-lite-v1:0", System: "sys", UserText: "Hello", MaxTokens: 16000}}
 	if got := fake.Requests(); !equalRequests(got, want) {
 		t.Errorf("fake.Requests() = %+v, want %+v", got, want)
 	}
