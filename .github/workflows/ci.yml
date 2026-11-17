@@ -14,5 +14,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - run: make image-it docker-test docker-test-it
+      - name: Checkout source code
+        uses: actions/checkout@v7
+      - name: Run unit tests
+        run: make docker-test
+      - name: Run integration tests
+        run: make image-it docker-test-it
