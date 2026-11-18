@@ -115,8 +115,28 @@ ingress に reserved concurrency 10 を設定する。このとき、未予約�
 `/image` が使う Stability Stable Image Core（`stability.stable-image-core-v1:1`）と Stability Stable Image Control Sketch（`us.stability.stable-image-control-sketch-v1:0`）の利用を始める。どちらも `us-west-2` で行う。
 
 1. 2-1 と同じ権限と支払い方法（`aws-marketplace:Subscribe`、`aws-marketplace:Unsubscribe`、`aws-marketplace:ViewSubscriptions` の権限と、AWS Marketplace で使える支払い方法）が、初回の呼び出しを行う IAM 主体に必要。
-2. AWS マネジメントコンソールでリージョンを「米国西部（オレゴン）」`us-west-2` に切り替え、Amazon Bedrock を開く。
-3. ナビゲーションで「Model catalog」を選び、Stability Stable Image Core と Stability Stable Image Control Sketch をそれぞれ開いて、1 回ずつ呼び出す。この初回の呼び出しでサブスクリプションが始まる。
+2. Control Sketch の入力に使う画像として、各辺 64 ピクセル以上の PNG を 1 つ用意し、作業ディレクトリに `sketch.png` という名前で置く。
+3. CLI で各モデルを 1 回ずつ呼び出す。Control Sketch は推論プロファイル経由でしか呼び出せないため、どちらも CLI で行う。この初回の呼び出しでサブスクリプションが始まり、完了まで最大 15 分かかる。呼び出しには料金がかかる（Control Sketch は 1 回 0.07 USD）。
+
+   ```sh
+   # Stability Stable Image Core
+   printf '{"prompt":"a simple flowchart"}' > core-body.json
+   aws bedrock-runtime invoke-model \
+     --region us-west-2 \
+     --model-id stability.stable-image-core-v1:1 \
+     --content-type application/json \
+     --body fileb://core-body.json \
+     core-out.json
+
+   # Stability Stable Image Control Sketch
+   printf '{"prompt":"a simple flowchart","image":"%s"}' "$(base64 < sketch.png | tr -d '\n')" > sketch-body.json
+   aws bedrock-runtime invoke-model \
+     --region us-west-2 \
+     --model-id us.stability.stable-image-control-sketch-v1:0 \
+     --content-type application/json \
+     --body fileb://sketch-body.json \
+     sketch-out.json
+   ```
 4. 状態を確認する。各モデルで `agreementAvailability.status` が `AVAILABLE` なら利用できる。
 
    ```sh
