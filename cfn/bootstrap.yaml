@@ -29,8 +29,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AWSCloudFormationReadOnlyAccess
-        - arn:aws:iam::aws:policy/IAMReadOnlyAccess
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
       # タグ v* の push で起動したワークフローだけが引き受けられる
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
