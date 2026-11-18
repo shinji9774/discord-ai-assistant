@@ -20,6 +20,7 @@ import (
 
 	"discord-ai-assistant/test/discordfake"
 	"discord-ai-assistant/test/ssmfake"
+	"discord-ai-assistant/test/translatefake"
 )
 
 const (
@@ -32,11 +33,12 @@ const (
 	deferredResponse    = `{"type":5}`
 )
 
-// resetFakes は各テストの先頭で呼び、Discord・Bedrock・Lambda の fake を初期状態に戻す。
+// resetFakes は各テストの先頭で呼び、Discord・Bedrock・Translate・Lambda の fake を初期状態に戻す。
 // ssmfake は worker の起動時の記録を検証に使うので初期化しない。
 func resetFakes() {
 	discord.Reset()
 	bedrock.Reset()
+	translateF.Reset()
 	lambdaF.Reset()
 	forwardToWorker()
 }
@@ -52,6 +54,35 @@ func commandBody(t *testing.T, commandName, optionName, optionValue string) stri
 		"data": map[string]any{
 			"name":    commandName,
 			"options": []map[string]any{{"name": optionName, "type": 3, "value": optionValue}},
+		},
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+}
+
+// fileCommandBody は署名前の interaction の本文（/translate file:memo.txt to:en）を作る。
+// 添付の実体は data.resolved.attachments にあり、options の value は添付の ID になる。
+func fileCommandBody(t *testing.T, attachmentURL string) string {
+	t.Helper()
+	body := map[string]any{
+		"type":           2,
+		"application_id": testApplicationID,
+		"token":          testInteraction,
+		"channel_id":     "ch1",
+		"data": map[string]any{
+			"name": "translate",
+			"options": []map[string]any{
+				{"name": "file", "type": 11, "value": "att1"},
+				{"name": "to", "type": 3, "value": "en"},
+			},
+			"resolved": map[string]any{
+				"attachments": map[string]any{
+					"att1": map[string]any{"id": "att1", "filename": "memo.txt", "size": 15, "url": attachmentURL, "content_type": "text/plain; charset=utf-8"},
+				},
+			},
 		},
 	}
 	encoded, err := json.Marshal(body)
@@ -147,17 +178,35 @@ func discordReply(content string, files map[string]string) discordfake.Response 
 	return discordfake.Response{ApplicationID: testApplicationID, Token: testInteraction, Content: content, Files: files}
 }
 
-// 条件: Bedrock が「こんにちは」を end_turn で返し、/translate text:Hello を受ける。
+// 条件: Amazon Translate が「こんにちは」を返し、/translate text:Hello を受ける。
 // 内容: ingress が 200 {"type":5} を返し、Discord へ原文つきの翻訳結果が返信される。
 func TestTranslate_ValidCommand_RepliesTranslationWithOriginal(t *testing.T) {
 	resetFakes()
-	bedrock.RespondWith("こんにちは", "end_turn")
+	translateF.RespondWith("こんにちは")
 	body := commandBody(t, "translate", "text", "Hello")
 
 	got := invokeIngress(t, body, ingressPrivate)
 
 	assertDeferred(t, got)
 	assertDiscordResponse(t, discordReply("> Hello\n\nこんにちは", map[string]string{}))
+}
+
+// 条件: discordfake に memo.txt を置き、/translate file:memo.txt to:en を resolved.attachments つきで受ける。Amazon Translate が「Hello」を返す。
+// 内容: Discord へ memo_en.txt に訳文を入れた添付つきの返信がされ、Translate へは添付の中身が渡る。
+func TestTranslate_FileAttached_RepliesTranslatedFile(t *testing.T) {
+	resetFakes()
+	discord.AddAttachment("/attachments/1/memo.txt", "こんにちは")
+	translateF.RespondWithDocument("Hello")
+	body := fileCommandBody(t, discordURL+"/attachments/1/memo.txt")
+
+	got := invokeIngress(t, body, ingressPrivate)
+
+	assertDeferred(t, got)
+	assertDiscordResponse(t, discordReply("memo.txt を英語に翻訳しました。", map[string]string{"memo_en.txt": "Hello"}))
+	wantRequests := []translatefake.DocumentRequest{{Content: "こんにちは", ContentType: "text/plain", SourceLanguageCode: "auto", TargetLanguageCode: "en"}}
+	if requests := translateF.DocumentRequests(); !reflect.DeepEqual(requests, wantRequests) {
+		t.Errorf("DocumentRequests() = %+v, want %+v", requests, wantRequests)
+	}
 }
 
 // 条件: Bedrock が「プログラミング言語です」を end_turn で返し、/ask question:Go とは？ を受ける。
@@ -172,11 +221,11 @@ func TestAsk_ValidCommand_RepliesAnswerWithQuestion(t *testing.T) {
 	assertDiscordResponse(t, discordReply("> Go とは？\n\nプログラミング言語です", map[string]string{}))
 }
 
-// 条件: Bedrock が 2001 文字の結果を返す。
+// 条件: Amazon Translate が 2001 文字の結果を返す。
 // 内容: 本文は添付の案内になり、result.txt に全文が添付される。
 func TestTranslate_ResultOverContentLimit_AttachesResultFile(t *testing.T) {
 	resetFakes()
-	bedrock.RespondWith(strings.Repeat("あ", 2001), "end_turn")
+	translateF.RespondWith(strings.Repeat("あ", 2001))
 	body := commandBody(t, "translate", "text", "Hello")
 
 	invokeIngress(t, body, ingressPrivate)
@@ -187,26 +236,26 @@ func TestTranslate_ResultOverContentLimit_AttachesResultFile(t *testing.T) {
 	))
 }
 
-// 条件: Bedrock が max_tokens で打ち切られた「こんに」を返す。
+// 条件: Bedrock が max_tokens で打ち切られた「こん」を返し、/ask question:Go とは？ を受ける。
 // 内容: 本文の末尾に途中までの結果である旨が付く。
-func TestTranslate_AnswerStoppedByMaxTokens_AppendsTruncatedNotice(t *testing.T) {
+func TestAsk_AnswerStoppedByMaxTokens_AppendsTruncatedNotice(t *testing.T) {
 	resetFakes()
-	bedrock.RespondWith("こんに", "max_tokens")
-	body := commandBody(t, "translate", "text", "Hello")
+	bedrock.RespondWith("こん", "max_tokens")
+	body := commandBody(t, "ask", "question", "Go とは？")
 
 	invokeIngress(t, body, ingressPrivate)
 
 	assertDiscordResponse(t, discordReply(
-		"> Hello\n\nこんに\n\n（上限に達したため、途中までの結果です）",
+		"> Go とは？\n\nこん\n\n（上限に達したため、途中までの結果です）",
 		map[string]string{},
 	))
 }
 
-// 条件: Bedrock が 400 で失敗する。
+// 条件: Amazon Translate が 400 で失敗する。
 // 内容: Discord へ失敗を知らせる定型文が返信される。
-func TestTranslate_BedrockFails_RepliesFailureMessage(t *testing.T) {
+func TestTranslate_TranslateFails_RepliesFailureMessage(t *testing.T) {
 	resetFakes()
-	bedrock.FailWith(http.StatusBadRequest)
+	translateF.FailWith(http.StatusBadRequest)
 	body := commandBody(t, "translate", "text", "Hello")
 
 	invokeIngress(t, body, ingressPrivate)
@@ -232,7 +281,7 @@ func TestIngress_InvalidSignature_Returns401WithoutInvokingWorker(t *testing.T) 
 // 内容: worker は SSM から bot トークンを復号つきで読んでいる。
 func TestWorker_AfterCommand_HasReadBotTokenWithDecryption(t *testing.T) {
 	resetFakes()
-	bedrock.RespondWith("こんにちは", "end_turn")
+	translateF.RespondWith("こんにちは")
 	body := commandBody(t, "translate", "text", "Hello")
 	invokeIngress(t, body, ingressPrivate)
 	waitForDiscordResponse(t)
@@ -249,7 +298,7 @@ func TestWorker_AfterCommand_HasReadBotTokenWithDecryption(t *testing.T) {
 // 内容: worker のコンテナのログに bot トークンが含まれない。
 func TestWorker_AfterCommand_DoesNotLogBotToken(t *testing.T) {
 	resetFakes()
-	bedrock.RespondWith("こんにちは", "end_turn")
+	translateF.RespondWith("こんにちは")
 	body := commandBody(t, "translate", "text", "Hello")
 	invokeIngress(t, body, ingressPrivate)
 	waitForDiscordResponse(t)
@@ -265,7 +314,7 @@ func TestWorker_AfterCommand_DoesNotLogBotToken(t *testing.T) {
 // 内容: worker のコンテナのログに interaction token が含まれない。
 func TestWorker_AfterCommand_DoesNotLogInteractionToken(t *testing.T) {
 	resetFakes()
-	bedrock.RespondWith("こんにちは", "end_turn")
+	translateF.RespondWith("こんにちは")
 	body := commandBody(t, "translate", "text", "Hello")
 	invokeIngress(t, body, ingressPrivate)
 	waitForDiscordResponse(t)

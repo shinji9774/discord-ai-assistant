@@ -82,6 +82,16 @@ Resources:
                 Effect: Allow
                 Action: bedrock:InvokeModel
                 Resource: "*"
+              - Sid: TranslateText
+                Effect: Allow
+                Action:
+                  - translate:TranslateText
+                  - translate:TranslateDocument
+                Resource: "*"
+              - Sid: DetectSourceLanguage
+                Effect: Allow
+                Action: comprehend:DetectDominantLanguage
+                Resource: "*"
               - Sid: ReadBotToken
                 Effect: Allow
                 Action: ssm:GetParameter

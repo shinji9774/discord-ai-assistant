@@ -25,6 +25,7 @@ import (
 	"discord-ai-assistant/test/discordfake"
 	"discord-ai-assistant/test/lambdafake"
 	"discord-ai-assistant/test/ssmfake"
+	"discord-ai-assistant/test/translatefake"
 )
 
 const (
@@ -49,10 +50,11 @@ var rieInvocationMu sync.Mutex
 
 // 結合テスト全体で共有する、fake と RIE コンテナ。
 var (
-	discord *discordfake.Server
-	bedrock *bedrockfake.Server
-	lambdaF *lambdafake.Server
-	ssm     *ssmfake.Server
+	discord    *discordfake.Server
+	bedrock    *bedrockfake.Server
+	translateF *translatefake.Server
+	lambdaF    *lambdafake.Server
+	ssm        *ssmfake.Server
 
 	workerContainer  testcontainers.Container
 	ingressContainer testcontainers.Container
@@ -60,6 +62,7 @@ var (
 	workerURL        string
 	ingressPublicKey ed25519.PublicKey
 	ingressPrivate   ed25519.PrivateKey
+	discordURL       string // discordfake のコンテナから見える URL
 )
 
 func TestMain(m *testing.M) {
@@ -82,14 +85,18 @@ func setUp(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	discord, bedrock, lambdaF, ssm = discordfake.New(), bedrockfake.New(), lambdafake.New(), ssmfake.New()
+	discord, bedrock, translateF, lambdaF, ssm = discordfake.New(), bedrockfake.New(), translatefake.New(), lambdafake.New(), ssmfake.New()
 	ssm.SetParameter(botTokenParameterName, botTokenValue)
 
-	discordURL, err := serveFake(discord)
+	discordURL, err = serveFake(discord)
 	if err != nil {
 		return err
 	}
 	bedrockURL, err := serveFake(bedrock)
+	if err != nil {
+		return err
+	}
+	translateURL, err := serveFake(translateF)
 	if err != nil {
 		return err
 	}
@@ -106,6 +113,7 @@ func setUp(ctx context.Context) error {
 		"BEDROCK_MODEL_ID":                 bedrockModelID,
 		"BOT_TOKEN_PARAMETER_NAME":         botTokenParameterName,
 		"AWS_ENDPOINT_URL_BEDROCK_RUNTIME": bedrockURL,
+		"AWS_ENDPOINT_URL_TRANSLATE":       translateURL,
 		"AWS_ENDPOINT_URL_SSM":             ssmURL,
 		"DISCORD_API_BASE_URL":             discordURL,
 	})

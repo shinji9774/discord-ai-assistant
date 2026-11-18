@@ -43,7 +43,7 @@ type messagePayload struct {
 	Content string `json:"content"`
 }
 
-// Server は Discord REST のうち応答の更新とコマンド登録に応える http.Handler。
+// Server は Discord REST のうち応答の更新とコマンド登録、および添付ファイルのダウンロード（GET）に応える http.Handler。
 type Server struct {
 	mu            sync.Mutex
 	failStatus    int
@@ -51,6 +51,7 @@ type Server struct {
 	nextUnread    int           // WaitForResponse がまだ渡していない最初の応答の位置
 	responseAdded chan struct{} // 応答が届くたびに閉じて作り直す
 	registrations []Registration
+	attachments   map[string]string // URL のパス → 中身
 }
 
 func New() *Server {
@@ -66,6 +67,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveResponseUpdate(w, r, segments)
 	case r.Method == http.MethodPut && isRegistrationPath(segments):
 		s.serveRegistration(w, r, segments)
+	case r.Method == http.MethodGet:
+		s.serveAttachment(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -129,6 +132,18 @@ func (s *Server) serveRegistration(w http.ResponseWriter, r *http.Request, segme
 	}
 	s.registrations = append(s.registrations, reg)
 	writeJSON(w, definitions)
+}
+
+// serveAttachment は AddAttachment で登録したパスの中身を返す。未登録なら 404。
+func (s *Server) serveAttachment(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	content, ok := s.attachments[r.URL.Path]
+	s.mu.Unlock()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	_, _ = io.WriteString(w, content)
 }
 
 // rejectIfFailing は FailWith 中なら失敗を書き込んで真を返す。s.mu を保持して呼ぶ。
@@ -229,6 +244,13 @@ func (s *Server) Registrations() []Registration {
 	return append([]Registration(nil), s.registrations...)
 }
 
+// AddAttachment は GET path に返す添付ファイルの中身を登録する。
+func (s *Server) AddAttachment(path, content string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.attachments[path] = content
+}
+
 // FailWith は以後の応答を指定の status の失敗にする。失敗した依頼は記録しない。
 func (s *Server) FailWith(status int) {
 	s.mu.Lock()
@@ -240,7 +262,7 @@ func (s *Server) FailWith(status int) {
 func (s *Server) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.failStatus, s.responses, s.nextUnread, s.registrations = 0, nil, 0, nil
+	s.failStatus, s.responses, s.nextUnread, s.registrations, s.attachments = 0, nil, 0, nil, map[string]string{}
 	if s.responseAdded == nil {
 		s.responseAdded = make(chan struct{})
 	}

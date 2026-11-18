@@ -5,18 +5,21 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	awstranslate "github.com/aws/aws-sdk-go-v2/service/translate"
 
 	"discord-ai-assistant/internal/bottoken"
 	"discord-ai-assistant/internal/catalog"
 	"discord-ai-assistant/internal/discordapi"
 	"discord-ai-assistant/internal/llm"
 	"discord-ai-assistant/internal/reply"
+	"discord-ai-assistant/internal/translate"
 	"discord-ai-assistant/internal/worker"
 )
 
@@ -58,7 +61,9 @@ func run(logger *slog.Logger) error {
 	}
 
 	generator := llm.NewBedrockGenerator(bedrockruntime.NewFromConfig(awsConfig), modelID)
-	registry := catalog.New(catalog.Dependencies{Generator: generator, BotToken: token})
+	translator := translate.NewAmazonTranslator(awstranslate.NewFromConfig(awsConfig))
+	fetcher := translate.NewHTTPAttachmentFetcher(http.DefaultClient)
+	registry := catalog.New(catalog.Dependencies{Generator: generator, Translator: translator, Fetcher: fetcher, BotToken: token})
 	responder := reply.NewDiscordResponder(os.Getenv(discordapi.EnvBaseURL))
 	lambda.Start(worker.NewHandler(registry, responder, logger).Handle)
 	return nil

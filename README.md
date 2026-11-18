@@ -1,6 +1,6 @@
 # discord-ai-assistant
 
-Discord の slash command から AWS Bedrock（Amazon Nova 2 Lite）を呼び出す bot。AWS Lambda で動き、常時稼働するサーバはない。
+Discord の slash command から Amazon Translate と AWS Bedrock（Amazon Nova 2 Lite）を呼び出す bot。AWS Lambda で動き、常時稼働するサーバはない。
 
 この文書は管理者向けの設定手順書。章の順に進めると、bot を使える状態になる。
 
@@ -12,14 +12,14 @@ Discord の slash command から AWS Bedrock（Amazon Nova 2 Lite）を呼び出
 
 | コマンド | 内容 |
 |---|---|
-| `/translate` | 入力した文章を翻訳して返信する |
+| `/translate` | 入力した文章、または添付した `.txt` / `.html` / `.docx` ファイルを翻訳して返信する |
 | `/ask` | 質問に AI が答えて返信する |
 
 ### 構成
 
 - Discord とは Interactions Endpoint（HTTP）だけで連携する。Gateway には接続しない。
 - `ingress`（Lambda 関数、Function URL）が署名を検証し、3 秒以内に応答して `worker` を非同期に呼び出す。
-- `worker`（Lambda 関数）が Bedrock を呼び出し、結果を Discord に返信する。bot トークンは SSM Parameter Store（SecureString）から起動時に読む。
+- `worker`（Lambda 関数）が `/translate` では Amazon Translate（翻訳元の自動判定に Amazon Comprehend）を、`/ask` では Bedrock を呼び出し、結果を Discord に返信する。bot トークンは SSM Parameter Store（SecureString）から起動時に読む。
 - リリースは Git タグ `vX.Y.Z` の push で起動する GitHub Actions が行う。イメージを ECR に push し、CloudFormation の change set を作る。change set は管理者が確認して実行する。
 - AWS リージョンは `ap-northeast-1`。
 
@@ -238,7 +238,7 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
 
 ## 6. コマンドの登録
 
-`/translate`、`/ask`、`/help` を Discord に登録する。リリースで作ったイメージの中に `/register` がある。
+`/translate`、`/ask`、`/help` を Discord に登録する。ローカルでビルドしたイメージの中にある `/register` を使う。
 
 1. bot トークンを SSM から取り出す。
 
@@ -252,14 +252,25 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
    export DISCORD_APPLICATION_ID=<Application ID>
    ```
 
-2. 登録を実行する。`<image>` はリリースで push したイメージ（`<RepositoryUri の値>:v1.0.0`）。ECR から pull するため、先に `aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin <ECR のレジストリ>` でログインしておく。
+2. デプロイ済みのリリースタグを checkout する。`vX.Y.Z` は「4. リリース」で push したタグ。登録されるのはビルドしたソースのコマンド定義なので、デプロイ済みと同じタグでビルドしないと、Discord の画面の選択肢と実際の動作がずれる。
 
    ```sh
-   make register IMAGE=<image>
+   git checkout vX.Y.Z
    ```
 
-   成功すると登録したコマンドの名前が 1 行ずつ出る。
-3. 作業が終わったら、シェルからトークンを消す。
+3. イメージをビルドして登録を実行する。`make image` が作る `discord-ai-assistant:latest` を `make register` が既定で使うので、ECR へのログインは不要。
+
+   ```sh
+   make image register
+   ```
+
+   成功すると登録したコマンドの名前が 1 行ずつ出る。終わったら作業ブランチに戻す。
+
+   ```sh
+   git switch -
+   ```
+
+4. 作業が終わったら、シェルからトークンを消す。
 
    ```sh
    unset DISCORD_BOT_TOKEN

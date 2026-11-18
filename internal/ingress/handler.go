@@ -44,9 +44,13 @@ type interaction struct {
 	Data          struct {
 		Name    string `json:"name"`
 		Options []struct {
-			Name  string          `json:"name"`
-			Value json.RawMessage `json:"value"`
+			Name  string                               `json:"name"`
+			Type  discord.ApplicationCommandOptionType `json:"type"`
+			Value json.RawMessage                      `json:"value"`
 		} `json:"options"`
+		Resolved struct {
+			Attachments map[string]command.Attachment `json:"attachments"`
+		} `json:"resolved"`
 	} `json:"data"`
 }
 
@@ -109,8 +113,17 @@ func (h *Handler) handleCommand(ctx context.Context, in interaction) events.Lamb
 
 func toInvocation(in interaction) command.Invocation {
 	options := make(map[string]string, len(in.Data.Options))
+	var attachments map[string]command.Attachment
 	for _, o := range in.Data.Options {
-		options[o.Name] = optionValue(o.Value)
+		if o.Type != discord.ApplicationCommandOptionTypeAttachment {
+			options[o.Name] = optionValue(o.Value)
+			continue
+		}
+		if attachments == nil {
+			attachments = make(map[string]command.Attachment)
+		}
+		// 添付ファイル型の value は添付の ID で、実体は data.resolved.attachments にある。
+		attachments[o.Name] = in.Data.Resolved.Attachments[optionValue(o.Value)]
 	}
 	return command.Invocation{
 		ApplicationID:    in.ApplicationID,
@@ -118,6 +131,7 @@ func toInvocation(in interaction) command.Invocation {
 		ChannelID:        in.ChannelID,
 		CommandName:      in.Data.Name,
 		Options:          options,
+		Attachments:      attachments,
 	}
 }
 

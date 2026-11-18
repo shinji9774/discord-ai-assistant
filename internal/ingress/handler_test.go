@@ -24,6 +24,10 @@ const (
 	pingBody    = `{"type":1}`
 	commandBody = `{"type":2,"application_id":"app1","token":"tok1","channel_id":"ch1","data":{"name":"translate","options":[{"name":"text","type":3,"value":"Hello"},{"name":"to","type":3,"value":"英語"}]}}`
 
+	fileCommandBody = `{"type":2,"application_id":"app1","token":"tok1","channel_id":"ch1","data":{"name":"translate",` +
+		`"options":[{"name":"file","type":11,"value":"att1"},{"name":"to","type":3,"value":"en"}],` +
+		`"resolved":{"attachments":{"att1":{"id":"att1","filename":"memo.txt","size":12,"url":"https://cdn.example/att1/memo.txt","content_type":"text/plain; charset=utf-8"}}}}}`
+
 	helpCommandBody = `{"type":2,"application_id":"app1","token":"tok1","channel_id":"ch1","data":{"name":"help"}}`
 )
 
@@ -158,6 +162,33 @@ func TestHandle_Command_InvokesWorkerAndReturnsDeferred(t *testing.T) {
 		ChannelID:        "ch1",
 		CommandName:      "translate",
 		Options:          map[string]string{"text": "Hello", "to": "英語"},
+	}}
+	if recorded := invoker.recorded(); !reflect.DeepEqual(recorded, wantInvocations) {
+		t.Errorf("invocations = %+v, want %+v", recorded, wantInvocations)
+	}
+}
+
+// 条件: 添付ファイル型のオプション（file）と文字列のオプション（to）を持つ translate コマンド。
+// 内容: file は resolved から引いた情報が Attachments に入り、Options には to だけが入る。
+func TestHandle_CommandWithAttachment_PassesResolvedAttachmentOutsideOptions(t *testing.T) {
+	invoker := &recordingInvoker{}
+	handler, privateKey := newHandler(t, invoker)
+	req := signedRequest(t, privateKey, fileCommandBody)
+
+	_, _ = handler.Handle(context.Background(), req)
+
+	wantInvocations := []command.Invocation{{
+		ApplicationID:    "app1",
+		InteractionToken: "tok1",
+		ChannelID:        "ch1",
+		CommandName:      "translate",
+		Options:          map[string]string{"to": "en"},
+		Attachments: map[string]command.Attachment{"file": {
+			Filename:    "memo.txt",
+			URL:         "https://cdn.example/att1/memo.txt",
+			ContentType: "text/plain; charset=utf-8",
+			Size:        12,
+		}},
 	}}
 	if recorded := invoker.recorded(); !reflect.DeepEqual(recorded, wantInvocations) {
 		t.Errorf("invocations = %+v, want %+v", recorded, wantInvocations)

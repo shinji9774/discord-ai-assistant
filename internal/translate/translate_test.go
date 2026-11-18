@@ -8,56 +8,72 @@ import (
 	"testing"
 
 	"discord-ai-assistant/internal/command"
-	"discord-ai-assistant/internal/llm"
-	"discord-ai-assistant/internal/llm/llmtest"
 	"discord-ai-assistant/internal/translate"
+	"discord-ai-assistant/internal/translate/translatetest"
 )
 
 func invocation(options map[string]string) command.Invocation {
 	return command.Invocation{CommandName: "translate", Options: options}
 }
 
-// 条件: text と to（英語）を指定して実行する。
-// 内容: 英語への翻訳を依頼する request が 1 件、生成器へ渡る。
-func TestExecute_ToSpecified_RequestsTranslationIntoThatLanguage(t *testing.T) {
-	gen := &llmtest.Generator{}
-	cmd := translate.New(gen)
+func fileInvocation(options map[string]string, file command.Attachment) command.Invocation {
+	return command.Invocation{
+		CommandName: "translate",
+		Options:     options,
+		Attachments: map[string]command.Attachment{"file": file},
+	}
+}
 
-	_, _ = cmd.Execute(context.Background(), invocation(map[string]string{"text": "こんにちは", "to": "英語"}))
+func attachment(filename string, size int) command.Attachment {
+	return command.Attachment{Filename: filename, URL: "https://cdn.example/" + filename, Size: size}
+}
 
-	want := []llm.Request{{
-		System:          "あなたは翻訳者です。ユーザーの文章を英語に翻訳してください。翻訳文だけを出力し、説明や前置きは書かないでください。",
-		UserText:        "こんにちは",
-		MaxOutputTokens: 16000,
-	}}
-	if !reflect.DeepEqual(gen.Requests, want) {
-		t.Errorf("Requests = %+v, want %+v", gen.Requests, want)
+// 条件: text と to（en）を指定して実行する。
+// 内容: 指定した言語（英語 en）への翻訳依頼が 1 件、Translator へ渡る。
+func TestExecute_ToSpecified_TranslatesIntoThatLanguage(t *testing.T) {
+	fake := &translatetest.Translator{}
+	cmd := translate.New(fake, &translatetest.AttachmentFetcher{})
+
+	_, _ = cmd.Execute(context.Background(), invocation(map[string]string{"text": "こんにちは", "to": "en"}))
+
+	want := []translatetest.Call{{Text: "こんにちは", Target: translate.Language{Name: "英語", Code: "en"}}}
+	if !reflect.DeepEqual(fake.Calls, want) {
+		t.Errorf("Calls = %+v, want %+v", fake.Calls, want)
 	}
 }
 
 // 条件: text だけを指定し、to を省略して実行する。
-// 内容: 日本語への翻訳を依頼する request が 1 件、生成器へ渡る。
-func TestExecute_ToOmitted_RequestsTranslationIntoJapanese(t *testing.T) {
-	gen := &llmtest.Generator{}
-	cmd := translate.New(gen)
+// 内容: 英語（en）への翻訳依頼が 1 件、Translator へ渡る。
+func TestExecute_ToOmitted_TranslatesIntoEnglish(t *testing.T) {
+	fake := &translatetest.Translator{}
+	cmd := translate.New(fake, &translatetest.AttachmentFetcher{})
 
 	_, _ = cmd.Execute(context.Background(), invocation(map[string]string{"text": "Hello"}))
 
-	want := []llm.Request{{
-		System:          "あなたは翻訳者です。ユーザーの文章を日本語に翻訳してください。翻訳文だけを出力し、説明や前置きは書かないでください。",
-		UserText:        "Hello",
-		MaxOutputTokens: 16000,
-	}}
-	if !reflect.DeepEqual(gen.Requests, want) {
-		t.Errorf("Requests = %+v, want %+v", gen.Requests, want)
+	want := []translatetest.Call{{Text: "Hello", Target: translate.Language{Name: "英語", Code: "en"}}}
+	if !reflect.DeepEqual(fake.Calls, want) {
+		t.Errorf("Calls = %+v, want %+v", fake.Calls, want)
 	}
 }
 
-// 条件: 生成が成功し、結果が「こんにちは」。
+// 条件: to に choices 外の値（xx）が来る。
+// 内容: エラーが返り、Translator は呼ばれない。
+func TestExecute_ToNotInChoices_ReturnsErrorWithoutTranslating(t *testing.T) {
+	fake := &translatetest.Translator{}
+	cmd := translate.New(fake, &translatetest.AttachmentFetcher{})
+
+	_, err := cmd.Execute(context.Background(), invocation(map[string]string{"text": "Hello", "to": "xx"}))
+
+	if err == nil || len(fake.Calls) != 0 {
+		t.Errorf("Execute() error = %v, calls = %+v, want error and no calls", err, fake.Calls)
+	}
+}
+
+// 条件: 翻訳が成功し、結果が「こんにちは」。
 // 内容: 原文の引用の下に翻訳文が置かれた Result が返る。
 func TestExecute_Success_ReturnsOriginalQuotedAboveTranslation(t *testing.T) {
-	gen := &llmtest.Generator{Result: llm.Result{Text: "こんにちは"}}
-	cmd := translate.New(gen)
+	fake := &translatetest.Translator{Result: "こんにちは"}
+	cmd := translate.New(fake, &translatetest.AttachmentFetcher{})
 
 	got, _ := cmd.Execute(context.Background(), invocation(map[string]string{"text": "Hello"}))
 
@@ -66,25 +82,12 @@ func TestExecute_Success_ReturnsOriginalQuotedAboveTranslation(t *testing.T) {
 	}
 }
 
-// 条件: 生成結果が Truncated。
-// 内容: 翻訳文の後ろに途中打ち切りの注記が付く。
-func TestExecute_TruncatedResult_AppendsNotice(t *testing.T) {
-	gen := &llmtest.Generator{Result: llm.Result{Text: "こんに", Truncated: true}}
-	cmd := translate.New(gen)
-
-	got, _ := cmd.Execute(context.Background(), invocation(map[string]string{"text": "Hello"}))
-
-	if want := (command.Result{Text: "> Hello\n\nこんに\n\n（上限に達したため、途中までの結果です）"}); !reflect.DeepEqual(got, want) {
-		t.Errorf("Execute() = %+v, want %+v", got, want)
-	}
-}
-
-// 条件: 生成器がエラーを返す。
+// 条件: Translator がエラーを返す。
 // 内容: そのエラーがそのまま返る。
-func TestExecute_GeneratorFails_ReturnsError(t *testing.T) {
-	failure := errors.New("generate failed")
-	gen := &llmtest.Generator{Err: failure}
-	cmd := translate.New(gen)
+func TestExecute_TranslatorFails_ReturnsError(t *testing.T) {
+	failure := errors.New("translate failed")
+	fake := &translatetest.Translator{Err: failure}
+	cmd := translate.New(fake, &translatetest.AttachmentFetcher{})
 
 	_, err := cmd.Execute(context.Background(), invocation(map[string]string{"text": "Hello"}))
 
@@ -93,22 +96,221 @@ func TestExecute_GeneratorFails_ReturnsError(t *testing.T) {
 	}
 }
 
+// 条件: text も file も指定せずに実行する。
+// 内容: 指定を促す案内文が返り、Translator は呼ばれない。
+func TestExecute_NoTextNorFile_ReturnsGuidanceWithoutTranslating(t *testing.T) {
+	fake := &translatetest.Translator{}
+	cmd := translate.New(fake, &translatetest.AttachmentFetcher{})
+
+	got, err := cmd.Execute(context.Background(), invocation(map[string]string{}))
+
+	want := command.Result{Text: "翻訳する文章（text）かファイル（file）を指定してください。"}
+	if err != nil || !reflect.DeepEqual(got, want) || len(fake.Calls) != 0 || len(fake.DocumentCalls) != 0 {
+		t.Errorf("Execute() = %+v, %v, calls = %+v %+v, want %+v and no calls", got, err, fake.Calls, fake.DocumentCalls, want)
+	}
+}
+
+// 条件: text と file を両方指定して実行する。
+// 内容: どちらか一方にする旨の案内文が返り、Translator は呼ばれない。
+func TestExecute_BothTextAndFile_ReturnsGuidanceWithoutTranslating(t *testing.T) {
+	fake := &translatetest.Translator{}
+	fetcher := &translatetest.AttachmentFetcher{}
+	cmd := translate.New(fake, fetcher)
+
+	got, err := cmd.Execute(context.Background(), fileInvocation(map[string]string{"text": "Hello"}, attachment("memo.txt", 10)))
+
+	want := command.Result{Text: "text と file はどちらか一方だけ指定してください。"}
+	if err != nil || !reflect.DeepEqual(got, want) || len(fake.Calls) != 0 || len(fake.DocumentCalls) != 0 || len(fetcher.URLs) != 0 {
+		t.Errorf("Execute() = %+v, %v, want %+v and no calls", got, err, want)
+	}
+}
+
+// 条件: 対応外の拡張子（.pdf）のファイルを指定して実行する。
+// 内容: 対応形式の案内文が返り、取得も翻訳も行われない。
+func TestExecute_UnsupportedFileExtension_ReturnsGuidanceWithoutFetching(t *testing.T) {
+	fake := &translatetest.Translator{}
+	fetcher := &translatetest.AttachmentFetcher{}
+	cmd := translate.New(fake, fetcher)
+
+	got, err := cmd.Execute(context.Background(), fileInvocation(nil, attachment("memo.pdf", 10)))
+
+	want := command.Result{Text: "対応しているファイル形式は .txt / .html / .docx です。"}
+	if err != nil || !reflect.DeepEqual(got, want) || len(fake.DocumentCalls) != 0 || len(fetcher.URLs) != 0 {
+		t.Errorf("Execute() = %+v, %v, want %+v and no calls", got, err, want)
+	}
+}
+
+// 条件: 上限（100000 バイト）を 1 バイト超えるファイルを指定して実行する。
+// 内容: サイズ超過の案内文が返り、取得も翻訳も行われない。
+func TestExecute_FileOverSizeLimit_ReturnsGuidanceWithoutFetching(t *testing.T) {
+	fake := &translatetest.Translator{}
+	fetcher := &translatetest.AttachmentFetcher{}
+	cmd := translate.New(fake, fetcher)
+
+	got, err := cmd.Execute(context.Background(), fileInvocation(nil, attachment("memo.txt", 100001)))
+
+	want := command.Result{Text: "ファイルは 100 KB 以下にしてください。"}
+	if err != nil || !reflect.DeepEqual(got, want) || len(fake.DocumentCalls) != 0 || len(fetcher.URLs) != 0 {
+		t.Errorf("Execute() = %+v, %v, want %+v and no calls", got, err, want)
+	}
+}
+
+// 条件: 上限ちょうど（100000 バイト）の memo.txt を to=en で翻訳する。
+// 内容: 翻訳依頼が受理され、memo_en.txt に訳文が入った Result が返る。
+func TestExecute_FileAtSizeLimit_ReturnsTranslatedFile(t *testing.T) {
+	fake := &translatetest.Translator{DocumentResult: []byte("Hello")}
+	cmd := translate.New(fake, &translatetest.AttachmentFetcher{Content: []byte("こんにちは")})
+
+	got, err := cmd.Execute(context.Background(), fileInvocation(map[string]string{"to": "en"}, attachment("memo.txt", 100000)))
+
+	want := command.Result{
+		Text:  "memo.txt を英語に翻訳しました。",
+		Files: []command.File{{Name: "memo_en.txt", Content: []byte("Hello")}},
+	}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("Execute() = %+v, %v, want %+v", got, err, want)
+	}
+}
+
+// 条件: 拡張子が大文字の NOTES.HTML を to 省略で翻訳する。
+// 内容: text/html の形式で、取得した中身と英語が Translator へ渡り、URL がそのまま取得される。
+func TestExecute_UppercaseHTMLExtension_TranslatesAsHTMLIntoEnglish(t *testing.T) {
+	fake := &translatetest.Translator{}
+	fetcher := &translatetest.AttachmentFetcher{Content: []byte("<p>Hello</p>")}
+	cmd := translate.New(fake, fetcher)
+
+	_, _ = cmd.Execute(context.Background(), fileInvocation(nil, attachment("NOTES.HTML", 12)))
+
+	wantCalls := []translatetest.DocumentCall{{
+		Document: translate.Document{Content: []byte("<p>Hello</p>"), ContentType: "text/html"},
+		Target:   translate.Language{Name: "英語", Code: "en"},
+	}}
+	if !reflect.DeepEqual(fake.DocumentCalls, wantCalls) || !reflect.DeepEqual(fetcher.URLs, []string{"https://cdn.example/NOTES.HTML"}) {
+		t.Errorf("DocumentCalls = %+v, URLs = %v, want %+v", fake.DocumentCalls, fetcher.URLs, wantCalls)
+	}
+}
+
+// 条件: .docx のファイルを翻訳する。
+// 内容: Word 文書の形式で Translator へ渡る。
+func TestExecute_DocxFile_TranslatesAsWordDocument(t *testing.T) {
+	fake := &translatetest.Translator{}
+	cmd := translate.New(fake, &translatetest.AttachmentFetcher{Content: []byte("docx")})
+
+	_, _ = cmd.Execute(context.Background(), fileInvocation(nil, attachment("report.docx", 4)))
+
+	if got := fake.DocumentCalls[0].Document.ContentType; got != "application/vnd.openxmlformats-officedocument.wordprocessingml.document" {
+		t.Errorf("ContentType = %q, want the docx content type", got)
+	}
+}
+
+// 条件: 添付ファイルの取得が失敗する。
+// 内容: そのエラーがそのまま返り、翻訳は行われない。
+func TestExecute_FetchFails_ReturnsErrorWithoutTranslating(t *testing.T) {
+	failure := errors.New("fetch failed")
+	fake := &translatetest.Translator{}
+	cmd := translate.New(fake, &translatetest.AttachmentFetcher{Err: failure})
+
+	_, err := cmd.Execute(context.Background(), fileInvocation(nil, attachment("memo.txt", 10)))
+
+	if !errors.Is(err, failure) || len(fake.DocumentCalls) != 0 {
+		t.Errorf("Execute() error = %v, calls = %+v, want %v and no calls", err, fake.DocumentCalls, failure)
+	}
+}
+
+// 条件: ファイルの翻訳が失敗する。
+// 内容: そのエラーがそのまま返る。
+func TestExecute_TranslateDocumentFails_ReturnsError(t *testing.T) {
+	failure := errors.New("translate document failed")
+	fake := &translatetest.Translator{DocumentErr: failure}
+	cmd := translate.New(fake, &translatetest.AttachmentFetcher{Content: []byte("x")})
+
+	_, err := cmd.Execute(context.Background(), fileInvocation(nil, attachment("memo.txt", 1)))
+
+	if !errors.Is(err, failure) {
+		t.Errorf("Execute() error = %v, want %v", err, failure)
+	}
+}
+
 // 条件: 定義を取得する。
-// 内容: サーバ内専用で、text は必須・最大 6000 文字、to は任意の定義になる。
-func TestDefinition_Always_IsGuildOnlyWithInputLimit(t *testing.T) {
-	cmd := translate.New(&llmtest.Generator{})
+// 内容: サーバ内専用で、text（最大 3000 文字）・file（添付）・to がすべて任意の定義になる。
+func TestDefinition_Always_IsGuildOnlyWithOptionalTextAndFile(t *testing.T) {
+	cmd := translate.New(&translatetest.Translator{}, &translatetest.AttachmentFetcher{})
 
-	got, err := json.Marshal(cmd.Definition())
+	got, err := json.Marshal(withoutChoices(t, cmd.Definition()))
 
-	want := `{"type":1,"name":"translate","description":"文章を指定した言語に翻訳します",` +
+	want := `{"type":1,"name":"translate","description":"文章またはファイルを指定した言語に翻訳します",` +
 		`"options":[` +
-		`{"type":3,"name":"text","description":"翻訳する文章","required":true,"max_length":6000},` +
-		`{"type":3,"name":"to","description":"翻訳先の言語（省略時は日本語）"}],` +
+		`{"type":3,"name":"text","description":"翻訳する文章","max_length":3000},` +
+		`{"type":11,"name":"file","description":"翻訳するファイル（.txt / .html / .docx、100 KB まで）"},` +
+		`{"type":3,"name":"to","description":"翻訳先の言語（省略時は英語）"}],` +
 		`"contexts":[0]}`
 	if err != nil {
 		t.Fatalf("Marshal() error = %v", err)
 	}
 	assertJSONEqual(t, string(got), want)
+}
+
+// 条件: 定義を取得する。
+// 内容: to の choices が、日本語 ja から始まりペルシア語 fa で終わる 25 件の（名前, コード）になる。
+func TestDefinition_Always_ToHasTwentyFiveLanguageChoices(t *testing.T) {
+	cmd := translate.New(&translatetest.Translator{}, &translatetest.AttachmentFetcher{})
+
+	got := toChoices(t, cmd.Definition())
+
+	want := []choice{
+		{"日本語", "ja"}, {"英語", "en"}, {"中国語（簡体字）", "zh"}, {"中国語（繁体字）", "zh-TW"}, {"韓国語", "ko"},
+		{"スペイン語", "es"}, {"フランス語", "fr"}, {"ドイツ語", "de"}, {"イタリア語", "it"}, {"ポルトガル語", "pt"},
+		{"ロシア語", "ru"}, {"アラビア語", "ar"}, {"ヒンディー語", "hi"}, {"インドネシア語", "id"}, {"タイ語", "th"},
+		{"ベトナム語", "vi"}, {"トルコ語", "tr"}, {"オランダ語", "nl"}, {"ポーランド語", "pl"}, {"ウクライナ語", "uk"},
+		{"スウェーデン語", "sv"}, {"マレー語", "ms"}, {"タガログ語", "tl"}, {"ベンガル語", "bn"}, {"ペルシア語", "fa"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("choices = %+v, want %+v", got, want)
+	}
+}
+
+type choice struct {
+	Name  string
+	Value string
+}
+
+// definitionJSON は定義を JSON を経由して汎用の map にする。
+func definitionJSON(t *testing.T, definition any) map[string]any {
+	t.Helper()
+	encoded, err := json.Marshal(definition)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	return decoded
+}
+
+// toOption は定義の to オプション（options の 3 番目）を返す。
+func toOption(t *testing.T, definition any) map[string]any {
+	t.Helper()
+	options := definitionJSON(t, definition)["options"].([]any)
+	return options[2].(map[string]any)
+}
+
+// withoutChoices は to の choices を除いた定義を返す。choices は別のテストで検証する。
+func withoutChoices(t *testing.T, definition any) map[string]any {
+	t.Helper()
+	decoded := definitionJSON(t, definition)
+	delete(decoded["options"].([]any)[2].(map[string]any), "choices")
+	return decoded
+}
+
+func toChoices(t *testing.T, definition any) []choice {
+	t.Helper()
+	var got []choice
+	for _, c := range toOption(t, definition)["choices"].([]any) {
+		entry := c.(map[string]any)
+		got = append(got, choice{Name: entry["name"].(string), Value: entry["value"].(string)})
+	}
+	return got
 }
 
 func assertJSONEqual(t *testing.T, got, want string) {
