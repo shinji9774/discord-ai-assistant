@@ -10,8 +10,10 @@ import (
 	"strings"
 
 	"github.com/aws/aws-lambda-go/events"
+	"github.com/disgoorg/disgo/discord"
 
 	"discord-ai-assistant/internal/command"
+	"discord-ai-assistant/internal/help"
 )
 
 const (
@@ -51,7 +53,8 @@ type interaction struct {
 type messageResponse struct {
 	Type int `json:"type"`
 	Data struct {
-		Content string `json:"content"`
+		Content string               `json:"content"`
+		Flags   discord.MessageFlags `json:"flags,omitempty"`
 	} `json:"data"`
 }
 
@@ -93,6 +96,9 @@ func (h *Handler) Handle(ctx context.Context, req events.LambdaFunctionURLReques
 }
 
 func (h *Handler) handleCommand(ctx context.Context, in interaction) events.LambdaFunctionURLResponse {
+	if in.Data.Name == help.CommandName {
+		return jsonResponse(ephemeralBody(help.Usage))
+	}
 	inv := toInvocation(in)
 	if err := h.invoker.InvokeAsync(ctx, inv); err != nil {
 		h.logger.Error(logWorkerInvokeFailed, "command", inv.CommandName, "error", err)
@@ -128,6 +134,15 @@ func failureBody() string {
 	var msg messageResponse
 	msg.Type = responseTypeChannelMsg
 	msg.Data.Content = command.FailureMessage
+	b, _ := json.Marshal(msg)
+	return string(b)
+}
+
+func ephemeralBody(content string) string {
+	var msg messageResponse
+	msg.Type = responseTypeChannelMsg
+	msg.Data.Content = content
+	msg.Data.Flags = discord.MessageFlagEphemeral
 	b, _ := json.Marshal(msg)
 	return string(b)
 }

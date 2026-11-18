@@ -29,12 +29,12 @@ func newConfig(t *testing.T) (register.Config, *discordfake.Server) {
 func TestRun_Success_ReplacesGlobalCommandsWithAllDefinitions(t *testing.T) {
 	cfg, fake := newConfig(t)
 
-	err := register.Run(context.Background(), cfg, catalog.New(catalog.Dependencies{}), &bytes.Buffer{})
+	err := register.Run(context.Background(), cfg, catalog.Definitions(), &bytes.Buffer{})
 
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	want := []discordfake.Registration{{ApplicationID: testApplicationID, Authorization: "Bot token1", CommandNames: []string{"translate", "ask"}}}
+	want := []discordfake.Registration{{ApplicationID: testApplicationID, Authorization: "Bot token1", CommandNames: []string{"translate", "ask", "help"}}}
 	if got := fake.Registrations(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Registrations() = %+v, want %+v", got, want)
 	}
@@ -46,13 +46,13 @@ func TestRun_Success_PrintsRegisteredCommandNames(t *testing.T) {
 	cfg, _ := newConfig(t)
 	var stdout bytes.Buffer
 
-	err := register.Run(context.Background(), cfg, catalog.New(catalog.Dependencies{}), &stdout)
+	err := register.Run(context.Background(), cfg, catalog.Definitions(), &stdout)
 
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if got := stdout.String(); got != "translate\nask\n" {
-		t.Errorf("stdout = %q, want %q", got, "translate\nask\n")
+	if got := stdout.String(); got != "translate\nask\nhelp\n" {
+		t.Errorf("stdout = %q, want %q", got, "translate\nask\nhelp\n")
 	}
 }
 
@@ -62,7 +62,7 @@ func TestRun_DiscordFails_ReturnsErrorWithoutToken(t *testing.T) {
 	cfg, fake := newConfig(t)
 	fake.FailWith(401)
 
-	err := register.Run(context.Background(), cfg, catalog.New(catalog.Dependencies{}), &bytes.Buffer{})
+	err := register.Run(context.Background(), cfg, catalog.Definitions(), &bytes.Buffer{})
 
 	if err == nil {
 		t.Fatal("Run() error = nil, want error")
@@ -78,7 +78,7 @@ func TestRun_MissingBotToken_ReturnsError(t *testing.T) {
 	cfg, _ := newConfig(t)
 	cfg.BotToken = ""
 
-	err := register.Run(context.Background(), cfg, catalog.New(catalog.Dependencies{}), &bytes.Buffer{})
+	err := register.Run(context.Background(), cfg, catalog.Definitions(), &bytes.Buffer{})
 
 	if err == nil || err.Error() != "DISCORD_BOT_TOKEN is not set" {
 		t.Errorf("Run() error = %v, want %q", err, "DISCORD_BOT_TOKEN is not set")
@@ -91,7 +91,7 @@ func TestRun_MissingApplicationID_ReturnsError(t *testing.T) {
 	cfg, _ := newConfig(t)
 	cfg.ApplicationID = ""
 
-	err := register.Run(context.Background(), cfg, catalog.New(catalog.Dependencies{}), &bytes.Buffer{})
+	err := register.Run(context.Background(), cfg, catalog.Definitions(), &bytes.Buffer{})
 
 	if err == nil || err.Error() != "DISCORD_APPLICATION_ID is not set" {
 		t.Errorf("Run() error = %v, want %q", err, "DISCORD_APPLICATION_ID is not set")

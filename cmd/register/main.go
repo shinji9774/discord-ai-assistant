@@ -17,7 +17,7 @@ func main() {
 		BotToken:      os.Getenv(register.EnvBotToken),
 		APIBaseURL:    os.Getenv(discordapi.EnvBaseURL),
 	}
-	if err := register.Run(context.Background(), cfg, catalog.New(catalog.Dependencies{}), os.Stdout); err != nil {
+	if err := register.Run(context.Background(), cfg, catalog.Definitions(), os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "register:", err)
 		os.Exit(1)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -15,12 +16,15 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 
 	"discord-ai-assistant/internal/command"
+	"discord-ai-assistant/internal/help"
 	"discord-ai-assistant/internal/ingress"
 )
 
 const (
 	pingBody    = `{"type":1}`
 	commandBody = `{"type":2,"application_id":"app1","token":"tok1","channel_id":"ch1","data":{"name":"translate","options":[{"name":"text","type":3,"value":"Hello"},{"name":"to","type":3,"value":"英語"}]}}`
+
+	helpCommandBody = `{"type":2,"application_id":"app1","token":"tok1","channel_id":"ch1","data":{"name":"help"}}`
 )
 
 // recordingInvoker は依頼を記録し、設定されたエラーを返す WorkerInvoker の fake。
@@ -67,6 +71,28 @@ func jsonResponse(status int, body string) events.LambdaFunctionURLResponse {
 		Headers:    map[string]string{"Content-Type": "application/json"},
 		Body:       body,
 	}
+}
+
+// helpResponse は /help の応答のうち、仕様として確認する部分。
+type helpResponse struct {
+	Type    int
+	Flags   int
+	Content string
+}
+
+func summarizeHelpResponse(t *testing.T, res events.LambdaFunctionURLResponse) helpResponse {
+	t.Helper()
+	var body struct {
+		Type int `json:"type"`
+		Data struct {
+			Content string `json:"content"`
+			Flags   int    `json:"flags"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(res.Body), &body); err != nil {
+		t.Fatalf("unmarshal response body %q: %v", res.Body, err)
+	}
+	return helpResponse{Type: body.Type, Flags: body.Data.Flags, Content: body.Data.Content}
 }
 
 func assertResponse(t *testing.T, got, want events.LambdaFunctionURLResponse) {
@@ -135,6 +161,24 @@ func TestHandle_Command_InvokesWorkerAndReturnsDeferred(t *testing.T) {
 	}}
 	if recorded := invoker.recorded(); !reflect.DeepEqual(recorded, wantInvocations) {
 		t.Errorf("invocations = %+v, want %+v", recorded, wantInvocations)
+	}
+}
+
+// 条件: 正しい署名の help コマンド。
+// 内容: 200 で type 4・ephemeral の応答が返り、本文が help.Usage と一致し、worker は起動されない。
+func TestHandle_HelpCommand_ReturnsEphemeralHelpWithoutInvokingWorker(t *testing.T) {
+	invoker := &recordingInvoker{}
+	handler, privateKey := newHandler(t, invoker)
+	req := signedRequest(t, privateKey, helpCommandBody)
+
+	got, _ := handler.Handle(context.Background(), req)
+
+	want := helpResponse{Type: 4, Flags: 64, Content: help.Usage}
+	if gotSummary := summarizeHelpResponse(t, got); !reflect.DeepEqual(gotSummary, want) {
+		t.Errorf("help response = %+v, want %+v", gotSummary, want)
+	}
+	if recorded := invoker.recorded(); len(recorded) != 0 {
+		t.Errorf("invocations = %+v, want empty", recorded)
 	}
 }
 

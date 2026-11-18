@@ -8,10 +8,10 @@ import (
 	"io"
 	"net/url"
 
+	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
 	"github.com/disgoorg/snowflake/v2"
 
-	"discord-ai-assistant/internal/command"
 	"discord-ai-assistant/internal/discordapi"
 )
 
@@ -28,7 +28,7 @@ type Config struct {
 }
 
 // Run は全コマンドをグローバルコマンドとして一括で置き換え、登録した名前を 1 行ずつ stdout に書く。
-func Run(ctx context.Context, cfg Config, registry *command.Registry, stdout io.Writer) error {
+func Run(ctx context.Context, cfg Config, definitions []discord.ApplicationCommandCreate, stdout io.Writer) error {
 	if cfg.ApplicationID == "" {
 		return errors.New(EnvApplicationID + " is not set")
 	}
@@ -41,7 +41,6 @@ func Run(ctx context.Context, cfg Config, registry *command.Registry, stdout io.
 	}
 
 	client := rest.New(rest.NewClient(cfg.BotToken, discordapi.ClientOpts(cfg.APIBaseURL)...))
-	definitions := registry.Definitions()
 	if _, err := client.SetGlobalCommands(applicationID, definitions, rest.WithCtx(ctx)); err != nil {
 		return redactRequest(err)
 	}

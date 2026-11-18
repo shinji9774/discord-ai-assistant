@@ -1,8 +1,10 @@
 # discord-ai-assistant
 
-Discord の slash command から AWS Bedrock（Claude Haiku 5.5）を呼び出す bot。AWS Lambda で動き、常時稼働するサーバはない。
+Discord の slash command から AWS Bedrock（Amazon Nova 2 Lite）を呼び出す bot。AWS Lambda で動き、常時稼働するサーバはない。
 
 この文書は管理者向けの設定手順書。章の順に進めると、bot を使える状態になる。
+
+コマンドの使い方は [internal/help/USAGE.md](internal/help/USAGE.md) を参照してください。
 
 ## 概要
 
@@ -70,13 +72,13 @@ ingress に reserved concurrency 10 を設定する。このとき、未予約�
 
 次の順に行う。
 
-### 2-1. Bedrock で Claude Haiku 5.5 の利用を始める
+### 2-1. Bedrock で Amazon Nova 2 Lite の利用を始める
 
-一般の商用リージョンには、「Model access」ページでの申請はない（GovCloud 専用）。初回の呼び出しで自動的にサブスクリプションが始まる。Claude Haiku 5.5 は Anthropic の初回利用時の用途フォームの対象外なので、フォームの提出は要らない。
+一般の商用リージョンには、「Model access」ページでの申請はない（GovCloud 専用）。初回の呼び出しで自動的にサブスクリプションが始まる。Amazon Nova 2 Lite は Anthropic のモデルではないので、Anthropic の初回利用時の用途フォームの提出は要らない。
 
 1. 初回の呼び出しを行う IAM 主体に、`aws-marketplace:Subscribe`、`aws-marketplace:Unsubscribe`、`aws-marketplace:ViewSubscriptions` の権限があることを確認する。AWS Marketplace で使える支払い方法も必要。
 2. AWS マネジメントコンソールでリージョンを「アジアパシフィック（東京）」`ap-northeast-1` にし、Amazon Bedrock を開く。
-3. ナビゲーションで「Model catalog」を選び、Claude Haiku 5.5 を選んで playground で開き、1 回呼び出す。この初回の呼び出しでサブスクリプションが始まる。
+3. ナビゲーションで「Model catalog」を選び、Amazon Nova 2 Lite を選んで playground で開き、1 回呼び出す。この初回の呼び出しでサブスクリプションが始まる。
 4. 状態を確認する。`agreementAvailability.status` が `AVAILABLE` なら利用できる。
 
    ```sh
@@ -103,7 +105,7 @@ ECR リポジトリ、リリース用ロールを作る。管理者が最初に 
 | パラメータ | 内容 | 既定値 |
 |---|---|---|
 | `GitHubRepository` | リリースを実行する GitHub リポジトリ（`owner@owner_id/repo@repo_id` 形式）。必須 | なし |
-| `RepositoryName` | ECR リポジトリ名 | `discord-ai-assistant` |
+| `RepositoryName` | ECR リポジトリ名 | `lambda-container/discord-ai-assistant` |
 | `AppStackName` | アプリ用スタックの名前（`cfn/app.yaml`） | `discord-ai-assistant` |
 | `GitHubOidcProviderArn` | GitHub OIDC プロバイダの ARN。必須 | なし |
 
@@ -134,7 +136,7 @@ ECR リポジトリ、リリース用ロールを作る。管理者が最初に 
      --query 'Stacks[0].Outputs'
    ```
 
-### 2-3. GitHub のリポジトリ変数を設定する
+### 2-3. GitHub のリポジトリ変数とシークレットを設定する
 
 1. GitHub のリポジトリで「Settings」→「Secrets and variables」→「Actions」→「Variables」タブを開く。
 2. 「New repository variable」で次を作る。ここでは「Secrets」ではなく「Variables」に入れる。
@@ -142,11 +144,12 @@ ECR リポジトリ、リリース用ロールを作る。管理者が最初に 
    | 変数名 | 値 |
    |---|---|
    | `APP_STACK_NAME` | アプリ用スタックの名前。`AppStackName` の値と同じにする（既定は `discord-ai-assistant`） |
+   | `IMAGE_NAME` | ECR リポジトリ名。`RepositoryName` の値と同じにする（既定は `lambda-container/discord-ai-assistant`） |
 
 3. GitHub のリポジトリで「Settings」→「Secrets and variables」→「Actions」→「Secrets」タブを開く。
-4. 「New repository variable」で次を作る。
+4. 「New repository secret」で次を作る。
 
-   | 変数名 | 値 |
+   | シークレット名 | 値 |
    |---|---|
    | `AWS_RELEASE_ROLE_ARN` | 2-2 の出力 `ReleaseRoleArn` |
    | `DISCORD_PUBLIC_KEY` | 「3. 公開鍵とトークンの設定」で入れる（この時点では作らなくてよい） |
@@ -156,7 +159,7 @@ ECR リポジトリ、リリース用ロールを作る。管理者が最初に 
 
 bot トークンは worker が起動時に読む。**リリース（「4. リリース」）より前に行うこと。** 保存していないと worker が起動できず、すべてのコマンドが返信しない。
 
-1. 「1. Discord アプリの作成」で控えた Public Key を、リポジトリ変数 `DISCORD_PUBLIC_KEY` に入れる。
+1. 「1. Discord アプリの作成」で控えた Public Key を、リポジトリのシークレット `DISCORD_PUBLIC_KEY` に入れる。
 
    GitHub の画面から入れる場合は、「2-3」と同じ「Secrets」タブに作る。
 2. bot トークンを SSM Parameter Store に SecureString で保存する。`--key-id` は付けない（既定の `aws/ssm` キーを使う）。
@@ -235,7 +238,7 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
 
 ## 6. コマンドの登録
 
-`/translate` と `/ask` を Discord に登録する。リリースで作ったイメージの中に `/register` がある。
+`/translate`、`/ask`、`/help` を Discord に登録する。リリースで作ったイメージの中に `/register` がある。
 
 1. bot トークンを SSM から取り出す。
 
@@ -287,11 +290,7 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
 
 自動テストをローカルで実行する。
 
-1. Go を入れる。バージョンは `.tool-versions` で固定している（Go 1.27.4）。asdf を使う場合:
-
-   ```sh
-   asdf install
-   ```
+1. Go を入れる。バージョンは `go.mod` で指定している（Go 1.27.4）。
 
 2. 静的解析と単体テストを実行する。
 

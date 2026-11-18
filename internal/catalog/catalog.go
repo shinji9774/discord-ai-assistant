@@ -2,8 +2,11 @@
 package catalog
 
 import (
+	"github.com/disgoorg/disgo/discord"
+
 	"discord-ai-assistant/internal/ask"
 	"discord-ai-assistant/internal/command"
+	"discord-ai-assistant/internal/help"
 	"discord-ai-assistant/internal/llm"
 	"discord-ai-assistant/internal/translate"
 )
@@ -12,6 +15,12 @@ import (
 type Dependencies struct {
 	Generator llm.TextGenerator
 	BotToken  string // 土台のコマンドは使わない。後続 spec のコマンドが受け取る
+}
+
+// Definitions は Discord へ登録する全コマンドの定義を、translate、ask、help の順に返す。
+// help は ingress が応答するため Registry には含めず、ここで足す。
+func Definitions() []discord.ApplicationCommandCreate {
+	return append(New(Dependencies{}).Definitions(), help.Definition())
 }
 
 // New は translate、ask の順にコマンドを登録した Registry を返す。
