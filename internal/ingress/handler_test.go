@@ -28,6 +28,9 @@ const (
 		`"options":[{"name":"file","type":11,"value":"att1"},{"name":"to","type":3,"value":"en"}],` +
 		`"resolved":{"attachments":{"att1":{"id":"att1","filename":"memo.txt","size":12,"url":"https://cdn.example/att1/memo.txt","content_type":"text/plain; charset=utf-8"}}}}}`
 
+	privateCommandBody = `{"type":2,"application_id":"app1","token":"tok1","channel_id":"ch1","data":{"name":"image","options":[{"name":"prompt","type":3,"value":"cat"},{"name":"visibility","type":3,"value":"private"}]}}`
+	publicCommandBody  = `{"type":2,"application_id":"app1","token":"tok1","channel_id":"ch1","data":{"name":"image","options":[{"name":"prompt","type":3,"value":"cat"},{"name":"visibility","type":3,"value":"public"}]}}`
+
 	helpCommandBody = `{"type":2,"application_id":"app1","token":"tok1","channel_id":"ch1","data":{"name":"help"}}`
 )
 
@@ -277,5 +280,43 @@ func TestHandle_MalformedJSON_Returns400(t *testing.T) {
 	got, _ := handler.Handle(context.Background(), req)
 
 	want := events.LambdaFunctionURLResponse{StatusCode: http.StatusBadRequest, Body: "invalid request body"}
+	assertResponse(t, got, want)
+}
+
+// 条件: visibility に private を指定したコマンド。
+// 内容: 200 で flags 64 付きの {"type":5} が返り、worker に Invocation が渡される。
+func TestHandle_PrivateVisibility_ReturnsEphemeralDeferred(t *testing.T) {
+	invoker := &recordingInvoker{}
+	handler, privateKey := newHandler(t, invoker)
+	req := signedRequest(t, privateKey, privateCommandBody)
+
+	got, _ := handler.Handle(context.Background(), req)
+
+	assertResponse(t, got, jsonResponse(http.StatusOK, `{"type":5,"data":{"flags":64}}`))
+	if recorded := invoker.recorded(); len(recorded) != 1 {
+		t.Errorf("invocations = %+v, want 1 item", recorded)
+	}
+}
+
+// 条件: visibility に public を指定したコマンド。
+// 内容: 現状と同じ {"type":5} が返る（flags は付かない）。
+func TestHandle_PublicVisibility_ReturnsPlainDeferred(t *testing.T) {
+	handler, privateKey := newHandler(t, &recordingInvoker{})
+	req := signedRequest(t, privateKey, publicCommandBody)
+
+	got, _ := handler.Handle(context.Background(), req)
+
+	assertResponse(t, got, jsonResponse(http.StatusOK, `{"type":5}`))
+}
+
+// 条件: visibility に private を指定し、worker の起動に失敗する。
+// 内容: 200 で、失敗メッセージと flags 64 付きの {"type":4} が返る。
+func TestHandle_PrivateVisibilityWorkerInvokeFails_ReturnsEphemeralFailureMessage(t *testing.T) {
+	handler, privateKey := newHandler(t, &recordingInvoker{err: errors.New("boom")})
+	req := signedRequest(t, privateKey, privateCommandBody)
+
+	got, _ := handler.Handle(context.Background(), req)
+
+	want := jsonResponse(http.StatusOK, `{"type":4,"data":{"content":"処理に失敗しました。時間をおいてもう一度実行してください。","flags":64}}`)
 	assertResponse(t, got, want)
 }

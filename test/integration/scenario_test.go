@@ -7,8 +7,12 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"reflect"
@@ -31,6 +35,28 @@ const (
 
 	responseWaitTimeout = 30 * time.Second
 	deferredResponse    = `{"type":5}`
+	// 公開範囲で「実行者だけ」を選んだときの処理中の表示（flags 64 は ephemeral）。
+	privateDeferredResponse = `{"type":5,"data":{"flags":64}}`
+
+	imageCoreModelID        = "stability.stable-image-core-v1:1"
+	imageRegion             = "us-west-2"
+	imageDefaultAspectRatio = "1:1"
+
+	imagePrompt         = "ユーザー認証の流れ"
+	screeningAllowed    = `{"verdict":"allow","english_prompt":"user authentication flow"}`
+	screeningRejected   = `{"verdict":"reject","english_prompt":""}`
+	imageRejectedNotice = "この依頼は図以外の画像を求めているため、生成しませんでした。生成できるのは、図解・模式図、フローチャート・構成図、アイコン・ピクトグラム・ロゴです。"
+	imageFilteredNotice = "内容が原因で、画像を生成できませんでした。文章または元にする画像を変えて、もう一度実行してください。"
+	imageFilterReason   = "Filter reason: prompt"
+	imageFileName       = "image.png"
+	generatedImage      = "generated png"
+
+	imageSketchModelID    = "us.stability.stable-image-control-sketch-v1:0"
+	imageSourcePath       = "/attachments/1/sketch.png"
+	imageSourceSide       = 64
+	imageSourceOptionID   = "att1"
+	imageSourceNotAnImage = "not an image"
+	imageSourceNotice     = "元にする画像を受け付けられませんでした。受け付けられるのは、PNG または JPEG で、10 MB 以下、各辺 64 ピクセル以上、総画素数 25,000,000 以下（例: 5712×4284）、縦横比 1:2.5 から 2.5:1 の画像です。"
 )
 
 // resetFakes は各テストの先頭で呼び、Discord・Bedrock・Translate・Lambda の fake を初期状態に戻す。
@@ -61,6 +87,92 @@ func commandBody(t *testing.T, commandName, optionName, optionValue string) stri
 		t.Fatal(err)
 	}
 	return string(encoded)
+}
+
+// interactionBody は署名前の interaction の本文を、スラッシュコマンドの data から作る。
+func interactionBody(t *testing.T, data map[string]any) string {
+	t.Helper()
+	body := map[string]any{
+		"type":           2,
+		"application_id": testApplicationID,
+		"token":          testInteraction,
+		"channel_id":     "ch1",
+		"data":           data,
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+}
+
+// imageCommandBody は署名前の interaction の本文（/image prompt:... visibility:...）を作る。visibility が空ならオプションを付けない。
+func imageCommandBody(t *testing.T, prompt, visibility string) string {
+	t.Helper()
+	options := []map[string]any{{"name": "prompt", "type": 3, "value": prompt}}
+	if visibility != "" {
+		options = append(options, map[string]any{"name": "visibility", "type": 3, "value": visibility})
+	}
+	return interactionBody(t, map[string]any{"name": "image", "options": options})
+}
+
+// imageSourceCommandBody は署名前の interaction の本文（/image prompt:... source:sketch.png）を作る。
+// 添付の実体は data.resolved.attachments にあり、options の value は添付の ID になる。size は Discord が伝える大きさ。
+func imageSourceCommandBody(t *testing.T, prompt, attachmentURL string, size int) string {
+	t.Helper()
+	return interactionBody(t, map[string]any{
+		"name": "image",
+		"options": []map[string]any{
+			{"name": "prompt", "type": 3, "value": prompt},
+			{"name": "source", "type": 11, "value": imageSourceOptionID},
+		},
+		"resolved": map[string]any{
+			"attachments": map[string]any{
+				imageSourceOptionID: map[string]any{"id": imageSourceOptionID, "filename": "sketch.png", "size": size, "url": attachmentURL, "content_type": "image/png"},
+			},
+		},
+	})
+}
+
+// solidPNG は一辺 imageSourceSide ピクセルの単色の PNG を作る。縮小の対象にならない大きさである。
+func solidPNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, imageSourceSide, imageSourceSide))
+	for y := 0; y < imageSourceSide; y++ {
+		for x := 0; x < imageSourceSide; x++ {
+			img.Set(x, y, color.White)
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// imageInvocation は画像生成の依頼のうち、モデル ID・リージョン・本文の縦横比と元画像（base64）を取り出したもの。
+type imageInvocation struct {
+	ModelID     string
+	Region      string
+	AspectRatio string
+	Image       string
+}
+
+// imageInvocations は bedrock が受けた InvokeModel 依頼を imageInvocation にして返す。
+func imageInvocations(t *testing.T) []imageInvocation {
+	t.Helper()
+	got := []imageInvocation{}
+	for _, req := range bedrock.InvokeRequests() {
+		var body struct {
+			AspectRatio string `json:"aspect_ratio"`
+			Image       string `json:"image"`
+		}
+		if err := json.Unmarshal([]byte(req.Body), &body); err != nil {
+			t.Fatalf("InvokeModel の本文が解釈できない: %v: %s", err, req.Body)
+		}
+		got = append(got, imageInvocation{ModelID: req.ModelID, Region: req.Region, AspectRatio: body.AspectRatio, Image: body.Image})
+	}
+	return got
 }
 
 // fileCommandBody は署名前の interaction の本文（/translate file:memo.txt to:en）を作る。
@@ -219,6 +331,104 @@ func TestAsk_ValidCommand_RepliesAnswerWithQuestion(t *testing.T) {
 	invokeIngress(t, body, ingressPrivate)
 
 	assertDiscordResponse(t, discordReply("> Go とは？\n\nプログラミング言語です", map[string]string{}))
+}
+
+// 条件: 審査が許可を返し、画像生成が画像を返す。/image prompt:ユーザー認証の流れ を受ける。
+// 内容: ingress が 200 {"type":5} を返し、Discord へ原文と image.png が投稿される。画像生成の依頼は Core のモデル ID・us-west-2・縦横比 1:1 で届く。
+func TestImage_PromptOnly_PostsImageWithOriginalPrompt(t *testing.T) {
+	resetFakes()
+	bedrock.RespondWith(screeningAllowed, "end_turn")
+	bedrock.RespondWithImage([]byte(generatedImage))
+	body := imageCommandBody(t, imagePrompt, "")
+
+	got := invokeIngress(t, body, ingressPrivate)
+
+	assertDeferred(t, got)
+	assertDiscordResponse(t, discordReply(imagePrompt, map[string]string{imageFileName: generatedImage}))
+	wantInvocations := []imageInvocation{{ModelID: imageCoreModelID, Region: imageRegion, AspectRatio: imageDefaultAspectRatio}}
+	if invocations := imageInvocations(t); !reflect.DeepEqual(invocations, wantInvocations) {
+		t.Errorf("画像生成の依頼 = %+v, want %+v", invocations, wantInvocations)
+	}
+}
+
+// 条件: /image prompt:ユーザー認証の流れ visibility:private を受ける。
+// 内容: ingress の応答が 200 {"type":5,"data":{"flags":64}} になり、処理中の表示が実行者だけになる。
+func TestImage_PrivateVisibility_DefersEphemerally(t *testing.T) {
+	resetFakes()
+	bedrock.RespondWith(screeningAllowed, "end_turn")
+	body := imageCommandBody(t, imagePrompt, "private")
+
+	got := invokeIngress(t, body, ingressPrivate)
+	waitForDiscordResponse(t)
+
+	if got.StatusCode != http.StatusOK || got.Body != privateDeferredResponse {
+		t.Errorf("ingress の応答 = %d %s, want 200 %s", got.StatusCode, got.Body, privateDeferredResponse)
+	}
+}
+
+// 条件: 審査が拒否を返す。/image prompt:ユーザー認証の流れ を受ける。
+// 内容: Discord へ断る文言が返信され、画像生成は呼ばれない。
+func TestImage_RejectedPrompt_PostsRejectionNotice(t *testing.T) {
+	resetFakes()
+	bedrock.RespondWith(screeningRejected, "end_turn")
+	body := imageCommandBody(t, imagePrompt, "")
+
+	invokeIngress(t, body, ingressPrivate)
+
+	assertDiscordResponse(t, discordReply(imageRejectedNotice, map[string]string{}))
+	if invocations := imageInvocations(t); len(invocations) != 0 {
+		t.Errorf("画像生成の依頼 = %+v, want none", invocations)
+	}
+}
+
+// 条件: 審査が許可を返し、画像生成が内容を理由とする拒否（Filter reason）を返す。
+// 内容: Discord へ内容が原因である旨の文言が返信される。
+func TestImage_ContentFiltered_PostsContentNotice(t *testing.T) {
+	resetFakes()
+	bedrock.RespondWith(screeningAllowed, "end_turn")
+	bedrock.RespondWithFinishReason(imageFilterReason)
+	body := imageCommandBody(t, imagePrompt, "")
+
+	invokeIngress(t, body, ingressPrivate)
+
+	assertDiscordResponse(t, discordReply(imageFilteredNotice, map[string]string{}))
+}
+
+// 条件: 審査が許可を返し、画像生成が画像を返す。64×64 の単色 PNG を元画像にして、/image prompt:ユーザー認証の流れ source:sketch.png を受ける。
+// 内容: Discord へ原文と image.png が投稿される。画像生成の依頼は Control Sketch のモデル ID・us-west-2 で届き、本文に元画像の base64 がある。
+func TestImage_WithSource_InvokesControlSketch(t *testing.T) {
+	resetFakes()
+	source := solidPNG(t)
+	discord.AddAttachment(imageSourcePath, string(source))
+	bedrock.RespondWith(screeningAllowed, "end_turn")
+	bedrock.RespondWithImage([]byte(generatedImage))
+	body := imageSourceCommandBody(t, imagePrompt, discordURL+imageSourcePath, len(source))
+
+	invokeIngress(t, body, ingressPrivate)
+
+	assertDiscordResponse(t, discordReply(imagePrompt, map[string]string{imageFileName: generatedImage}))
+	wantInvocations := []imageInvocation{{ModelID: imageSketchModelID, Region: imageRegion, Image: base64.StdEncoding.EncodeToString(source)}}
+	if invocations := imageInvocations(t); !reflect.DeepEqual(invocations, wantInvocations) {
+		t.Errorf("画像生成の依頼 = %+v, want %+v", invocations, wantInvocations)
+	}
+}
+
+// 条件: 画像でないバイト列を元画像にして、/image prompt:ユーザー認証の流れ source:sketch.png を受ける。
+// 内容: Discord へ元画像を受け付けられない旨の文言が返信され、文章生成（Converse）も画像生成（InvokeModel）も呼ばれない。
+func TestImage_InvalidSource_PostsSourceNotice(t *testing.T) {
+	resetFakes()
+	discord.AddAttachment(imageSourcePath, imageSourceNotAnImage)
+	body := imageSourceCommandBody(t, imagePrompt, discordURL+imageSourcePath, len(imageSourceNotAnImage))
+
+	invokeIngress(t, body, ingressPrivate)
+
+	assertDiscordResponse(t, discordReply(imageSourceNotice, map[string]string{}))
+	if requests := bedrock.Requests(); len(requests) != 0 {
+		t.Errorf("文章生成の依頼 = %+v, want none", requests)
+	}
+	if invocations := imageInvocations(t); len(invocations) != 0 {
+		t.Errorf("画像生成の依頼 = %+v, want none", invocations)
+	}
 }
 
 // 条件: Amazon Translate が 2001 文字の結果を返す。

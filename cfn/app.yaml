@@ -82,6 +82,15 @@ Resources:
                 Effect: Allow
                 Action: bedrock:InvokeModel
                 Resource: "*"
+              - Sid: InvokeImageGenerationModels
+                Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource:
+                  - !Sub arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/stability.stable-image-core-v1:1
+                  - !Sub arn:${AWS::Partition}:bedrock:us-west-2:${AWS::AccountId}:inference-profile/us.stability.stable-image-control-sketch-v1:0
+                  - !Sub arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/stability.stable-image-control-sketch-v1:0
+                  - !Sub arn:${AWS::Partition}:bedrock:us-east-2::foundation-model/stability.stable-image-control-sketch-v1:0
+                  - !Sub arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/stability.stable-image-control-sketch-v1:0
               - Sid: TranslateText
                 Effect: Allow
                 Action:

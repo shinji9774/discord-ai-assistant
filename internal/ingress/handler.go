@@ -31,6 +31,7 @@ const (
 	unsupportedTypeBody    = "unsupported interaction type"
 	pongBody               = `{"type":1}`
 	deferredBody           = `{"type":5}`
+	privateDeferredBody    = `{"type":5,"data":{"flags":64}}`
 	logWorkerInvokeFailed  = "worker invoke failed"
 	responseTypeChannelMsg = 4
 )
@@ -104,9 +105,13 @@ func (h *Handler) handleCommand(ctx context.Context, in interaction) events.Lamb
 		return jsonResponse(ephemeralBody(help.Usage))
 	}
 	inv := toInvocation(in)
+	private := command.IsPrivate(inv.Options)
 	if err := h.invoker.InvokeAsync(ctx, inv); err != nil {
 		h.logger.Error(logWorkerInvokeFailed, "command", inv.CommandName, "error", err)
-		return jsonResponse(failureBody())
+		return jsonResponse(failureBody(private))
+	}
+	if private {
+		return jsonResponse(privateDeferredBody)
 	}
 	return jsonResponse(deferredBody)
 }
@@ -144,10 +149,13 @@ func optionValue(raw json.RawMessage) string {
 	return string(raw)
 }
 
-func failureBody() string {
+func failureBody(private bool) string {
 	var msg messageResponse
 	msg.Type = responseTypeChannelMsg
 	msg.Data.Content = command.FailureMessage
+	if private {
+		msg.Data.Flags = discord.MessageFlagEphemeral
+	}
 	b, _ := json.Marshal(msg)
 	return string(b)
 }

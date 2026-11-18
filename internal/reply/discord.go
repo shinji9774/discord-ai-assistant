@@ -16,6 +16,13 @@ import (
 	"discord-ai-assistant/internal/discordapi"
 )
 
+// noAllowedMentions は空の allowed_mentions。parse などを null でなく [] で送り、どの種類のメンションも解釈させない。
+var noAllowedMentions = discord.AllowedMentions{
+	Parse: []discord.AllowedMentionType{},
+	Roles: []snowflake.ID{},
+	Users: []snowflake.ID{},
+}
+
 // DiscordResponder は disgo の REST で interaction の応答を更新する。
 // interaction token の経路は認可ヘッダが要らないため、bot トークンは持たない。
 type DiscordResponder struct {
@@ -50,7 +57,7 @@ func buildMessageUpdate(result command.Result) discord.MessageUpdate {
 	for _, f := range result.Files {
 		files = append(files, discord.NewFile(f.Name, "", bytes.NewReader(f.Content)))
 	}
-	return discord.NewMessageUpdate().WithContent(content).WithFiles(files...)
+	return discord.NewMessageUpdate().WithContent(content).WithFiles(files...).WithAllowedMentions(&noAllowedMentions)
 }
 
 func utf16Length(s string) int {

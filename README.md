@@ -14,14 +14,28 @@ Discord の slash command から Amazon Translate と AWS Bedrock（Amazon Nova 
 |---|---|
 | `/translate` | 入力した文章、または添付した `.txt` / `.html` / `.docx` ファイルを翻訳して返信する |
 | `/ask` | 質問に AI が答えて返信する |
+| `/image` | 文章から図を 1 枚生成して投稿する。引数は、文章（`prompt`、必須、最大 1000 文字）、縦横比（`aspect_ratio`）、元にする画像（`source`）、公開範囲（`visibility`）。`source` を指定すると、その画像の線と構図を元に図として描き直す |
 
 ### 構成
 
 - Discord とは Interactions Endpoint（HTTP）だけで連携する。Gateway には接続しない。
 - `ingress`（Lambda 関数、Function URL）が署名を検証し、3 秒以内に応答して `worker` を非同期に呼び出す。
-- `worker`（Lambda 関数）が `/translate` では Amazon Translate（翻訳元の自動判定に Amazon Comprehend）を、`/ask` では Bedrock を呼び出し、結果を Discord に返信する。bot トークンは SSM Parameter Store（SecureString）から起動時に読む。
+- `worker`（Lambda 関数）が `/translate` では Amazon Translate（翻訳元の自動判定に Amazon Comprehend）を、`/ask` では Bedrock を呼び出し、結果を Discord に返信する。`/image` では、依頼の審査に Bedrock（ap-northeast-1）の Amazon Nova 2 Lite を、図の生成に `us-west-2` の Bedrock の画像生成モデル（Stability Stable Image Core、元にする画像があるときは Stability Stable Image Control Sketch）を呼び出す。bot トークンは SSM Parameter Store（SecureString）から起動時に読む。
 - リリースは Git タグ `vX.Y.Z` の push で起動する GitHub Actions が行う。イメージを ECR に push し、CloudFormation の change set を作る。change set は管理者が確認して実行する。
-- AWS リージョンは `ap-northeast-1`。
+- AWS リージョンは `ap-northeast-1`。ただし `/image` の画像生成モデルは `us-west-2` を使う。
+- `/image` に渡した文章と画像は米国リージョン（`us-west-2`、`us-east-1`、`us-east-2`）へ送られる。Stable Image Core のデータは `us-west-2`、Control Sketch のデータは `us-east-1`、`us-east-2`、`us-west-2` のいずれかへ送られる。
+
+### `/image` の注意点
+
+- 生成できるのは図（図解・模式図、フローチャート・構成図、アイコン・ピクトグラム・ロゴ）だけ。写真、イラスト、グラフ・チャートなど、図以外を求める依頼は断られる。
+- 図中の文字や内容の正確さは保証しない。
+- 元にする画像（`source`）として受け付けるのは、次の条件を満たす画像。満たさない画像を指定すると、画像は生成されず、この条件が通知される。
+  - 形式は PNG または JPEG
+  - ファイルの大きさは 10,000,000 バイト以下
+  - 各辺は 64 ピクセル以上
+  - 総画素数は 25,000,000 以下（例: 5712×4284）。9,437,184 を超える画像は、縦横比を保って 9,437,184 以下に縮小してから送る
+  - 縦横比は 1:2.5 から 2.5:1
+- 元にする画像（`source`）を指定すると、縦横比（`aspect_ratio`）の指定は使われない。
 
 ## 前提
 
@@ -96,7 +110,22 @@ ingress に reserved concurrency 10 を設定する。このとき、未予約�
      --query "inferenceProfileSummaries[?inferenceProfileId=='jp.amazon.nova-2-lite-v1:0'].inferenceProfileId"
    ```
 
-### 2-2. `cfn/bootstrap.yaml` のスタックを作る
+### 2-2. Bedrock で Stability のモデルの利用を始める
+
+`/image` が使う Stability Stable Image Core（`stability.stable-image-core-v1:1`）と Stability Stable Image Control Sketch（`us.stability.stable-image-control-sketch-v1:0`）の利用を始める。どちらも `us-west-2` で行う。
+
+1. 2-1 と同じ権限と支払い方法（`aws-marketplace:Subscribe`、`aws-marketplace:Unsubscribe`、`aws-marketplace:ViewSubscriptions` の権限と、AWS Marketplace で使える支払い方法）が、初回の呼び出しを行う IAM 主体に必要。
+2. AWS マネジメントコンソールでリージョンを「米国西部（オレゴン）」`us-west-2` に切り替え、Amazon Bedrock を開く。
+3. ナビゲーションで「Model catalog」を選び、Stability Stable Image Core と Stability Stable Image Control Sketch をそれぞれ開いて、1 回ずつ呼び出す。この初回の呼び出しでサブスクリプションが始まる。
+4. 状態を確認する。各モデルで `agreementAvailability.status` が `AVAILABLE` なら利用できる。
+
+   ```sh
+   aws bedrock get-foundation-model-availability \
+     --region us-west-2 \
+     --model-id <モデル ID>
+   ```
+
+### 2-3. `cfn/bootstrap.yaml` のスタックを作る
 
 ECR リポジトリ、リリース用ロールを作る。管理者が最初に 1 回だけ行う。
 
@@ -136,7 +165,7 @@ ECR リポジトリ、リリース用ロールを作る。管理者が最初に 
      --query 'Stacks[0].Outputs'
    ```
 
-### 2-3. GitHub のリポジトリ変数とシークレットを設定する
+### 2-4. GitHub のリポジトリ変数とシークレットを設定する
 
 1. GitHub のリポジトリで「Settings」→「Secrets and variables」→「Actions」→「Variables」タブを開く。
 2. 「New repository variable」で次を作る。ここでは「Secrets」ではなく「Variables」に入れる。
@@ -151,7 +180,7 @@ ECR リポジトリ、リリース用ロールを作る。管理者が最初に 
 
    | シークレット名 | 値 |
    |---|---|
-   | `AWS_RELEASE_ROLE_ARN` | 2-2 の出力 `ReleaseRoleArn` |
+   | `AWS_RELEASE_ROLE_ARN` | 2-3 の出力 `ReleaseRoleArn` |
    | `DISCORD_PUBLIC_KEY` | 「3. 公開鍵とトークンの設定」で入れる（この時点では作らなくてよい） |
 
 
@@ -161,7 +190,7 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
 
 1. 「1. Discord アプリの作成」で控えた Public Key を、リポジトリのシークレット `DISCORD_PUBLIC_KEY` に入れる。
 
-   GitHub の画面から入れる場合は、「2-3」と同じ「Secrets」タブに作る。
+   GitHub の画面から入れる場合は、「2-4」と同じ「Secrets」タブに作る。
 2. bot トークンを SSM Parameter Store に SecureString で保存する。`--key-id` は付けない（既定の `aws/ssm` キーを使う）。
 
    ```sh
@@ -238,7 +267,7 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
 
 ## 6. コマンドの登録
 
-`/translate`、`/ask`、`/help` を Discord に登録する。ローカルでビルドしたイメージの中にある `/register` を使う。
+`/translate`、`/ask`、`/image`、`/help` を Discord に登録する。ローカルでビルドしたイメージの中にある `/register` を使う。
 
 1. bot トークンを SSM から取り出す。
 

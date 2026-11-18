@@ -17,6 +17,7 @@ import (
 	"discord-ai-assistant/internal/bottoken"
 	"discord-ai-assistant/internal/catalog"
 	"discord-ai-assistant/internal/discordapi"
+	"discord-ai-assistant/internal/imagegen"
 	"discord-ai-assistant/internal/llm"
 	"discord-ai-assistant/internal/reply"
 	"discord-ai-assistant/internal/translate"
@@ -61,9 +62,13 @@ func run(logger *slog.Logger) error {
 	}
 
 	generator := llm.NewBedrockGenerator(bedrockruntime.NewFromConfig(awsConfig), modelID)
+	imageClient := bedrockruntime.NewFromConfig(awsConfig, func(o *bedrockruntime.Options) {
+		o.Region = imagegen.BedrockRegion
+	})
+	imageGenerator := imagegen.NewStabilityGenerator(imageClient)
 	translator := translate.NewAmazonTranslator(awstranslate.NewFromConfig(awsConfig))
 	fetcher := translate.NewHTTPAttachmentFetcher(http.DefaultClient)
-	registry := catalog.New(catalog.Dependencies{Generator: generator, Translator: translator, Fetcher: fetcher, BotToken: token})
+	registry := catalog.New(catalog.Dependencies{Generator: generator, ImageGenerator: imageGenerator, Translator: translator, Fetcher: fetcher, BotToken: token})
 	responder := reply.NewDiscordResponder(os.Getenv(discordapi.EnvBaseURL))
 	lambda.Start(worker.NewHandler(registry, responder, logger).Handle)
 	return nil
