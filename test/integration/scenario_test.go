@@ -47,9 +47,7 @@ const (
 	imageDefaultAspectRatio = "1:1"
 
 	imagePrompt         = "ユーザー認証の流れ"
-	screeningAllowed    = `{"verdict":"allow","english_prompt":"user authentication flow"}`
-	screeningRejected   = `{"verdict":"reject","english_prompt":""}`
-	imageRejectedNotice = "この依頼は図以外の画像を求めているため、生成しませんでした。生成できるのは、図解・模式図、フローチャート・構成図、アイコン・ピクトグラム・ロゴです。"
+	writtenPrompt       = `{"prompt":"user authentication flow","negative_prompt":""}`
 	imageFilteredNotice = "内容が原因で、画像を生成できませんでした。文章または元にする画像を変えて、もう一度実行してください。"
 	imageFilterReason   = "Filter reason: prompt"
 	imageFileName       = "image.png"
@@ -384,7 +382,7 @@ func TestAsk_ModelSearchesWeb_RepliesAnswerWithSources(t *testing.T) {
 }
 
 // 条件: Bedrock が Web 検索を求めた後、2000 文字に [1] を付けた回答を返す。Web 検索は 1 件のページを返す。
-// 内容: 回答と出典を合わせると Discord の本文の上限を超えるので、質問・回答・出典の全体が result.md で返信される。
+// 内容: 回答と出典を合わせると Discord の本文の上限を超えるので、質問・回答・出典の全体が result.txt で返信される。
 func TestAsk_AnswerWithSourcesOverContentLimit_AttachesResultFile(t *testing.T) {
 	resetFakes()
 	answer := strings.Repeat("あ", 2000) + "[1]"
@@ -395,7 +393,7 @@ func TestAsk_AnswerWithSourcesOverContentLimit_AttachesResultFile(t *testing.T) 
 
 	assertDiscordResponse(t, discordReply(
 		"結果が長いため、ファイルに出力しました。",
-		map[string]string{"result.md": "> Go の最新版は？\n\n" + answer + "\n\n" + webSearchSources},
+		map[string]string{"result.txt": "> Go の最新版は？\n\n" + answer + "\n\n" + webSearchSources},
 	))
 }
 
@@ -417,11 +415,11 @@ func TestAsk_ValidCommand_InvokesTextModelFromConfig(t *testing.T) {
 	}
 }
 
-// 条件: 審査が許可を返し、画像生成が画像を返す。/image prompt:ユーザー認証の流れ を受ける。
+// 条件: プロンプトが書かれ、画像生成が画像を返す。/image prompt:ユーザー認証の流れ を受ける。
 // 内容: ingress が 200 {"type":5} を返し、Discord へ原文と image.png が投稿される。画像生成の依頼は Core のモデル ID・us-west-2・縦横比 1:1 で届く。Web は検索しない。
 func TestImage_PromptOnly_PostsImageWithOriginalPrompt(t *testing.T) {
 	resetFakes()
-	bedrock.RespondWith(screeningAllowed, "end_turn")
+	bedrock.RespondWith(writtenPrompt, "end_turn")
 	bedrock.RespondWithImage([]byte(generatedImage))
 	body := imageCommandBody(t, imagePrompt, "")
 
@@ -440,7 +438,7 @@ func TestImage_PromptOnly_PostsImageWithOriginalPrompt(t *testing.T) {
 // 内容: ingress の応答が 200 {"type":5,"data":{"flags":64}} になり、処理中の表示が実行者だけになる。
 func TestImage_PrivateVisibility_DefersEphemerally(t *testing.T) {
 	resetFakes()
-	bedrock.RespondWith(screeningAllowed, "end_turn")
+	bedrock.RespondWith(writtenPrompt, "end_turn")
 	body := imageCommandBody(t, imagePrompt, "private")
 
 	got := invokeIngress(t, body, ingressPrivate)
@@ -451,26 +449,11 @@ func TestImage_PrivateVisibility_DefersEphemerally(t *testing.T) {
 	}
 }
 
-// 条件: 審査が拒否を返す。/image prompt:ユーザー認証の流れ を受ける。
-// 内容: Discord へ断る文言が返信され、画像生成は呼ばれない。
-func TestImage_RejectedPrompt_PostsRejectionNotice(t *testing.T) {
-	resetFakes()
-	bedrock.RespondWith(screeningRejected, "end_turn")
-	body := imageCommandBody(t, imagePrompt, "")
-
-	invokeIngress(t, body, ingressPrivate)
-
-	assertDiscordResponse(t, discordReply(imageRejectedNotice, map[string]string{}))
-	if invocations := imageInvocations(t); len(invocations) != 0 {
-		t.Errorf("画像生成の依頼 = %+v, want none", invocations)
-	}
-}
-
-// 条件: 審査が許可を返し、画像生成が内容を理由とする拒否（Filter reason）を返す。
+// 条件: プロンプトが書かれ、画像生成が内容を理由とする拒否（Filter reason）を返す。
 // 内容: Discord へ内容が原因である旨の文言が返信される。
 func TestImage_ContentFiltered_PostsContentNotice(t *testing.T) {
 	resetFakes()
-	bedrock.RespondWith(screeningAllowed, "end_turn")
+	bedrock.RespondWith(writtenPrompt, "end_turn")
 	bedrock.RespondWithFinishReason(imageFilterReason)
 	body := imageCommandBody(t, imagePrompt, "")
 
@@ -479,13 +462,13 @@ func TestImage_ContentFiltered_PostsContentNotice(t *testing.T) {
 	assertDiscordResponse(t, discordReply(imageFilteredNotice, map[string]string{}))
 }
 
-// 条件: 審査が許可を返し、画像生成が画像を返す。64×64 の単色 PNG を元画像にして、/image prompt:ユーザー認証の流れ source:sketch.png を受ける。
+// 条件: プロンプトが書かれ、画像生成が画像を返す。64×64 の単色 PNG を元画像にして、/image prompt:ユーザー認証の流れ source:sketch.png を受ける。
 // 内容: Discord へ原文と image.png が投稿される。画像生成の依頼は Control Sketch のモデル ID・us-west-2 で届き、本文に元画像の base64 がある。
 func TestImage_WithSource_InvokesControlSketch(t *testing.T) {
 	resetFakes()
 	source := solidPNG(t)
 	discord.AddAttachment(imageSourcePath, string(source))
-	bedrock.RespondWith(screeningAllowed, "end_turn")
+	bedrock.RespondWith(writtenPrompt, "end_turn")
 	bedrock.RespondWithImage([]byte(generatedImage))
 	body := imageSourceCommandBody(t, imagePrompt, discordURL+imageSourcePath, len(source))
 

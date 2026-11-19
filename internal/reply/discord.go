@@ -52,20 +52,12 @@ func buildMessageUpdate(result command.Result) discord.MessageUpdate {
 	var files []*discord.File
 	if utf16Length(result.Text) > DiscordContentLimit {
 		content = AttachmentNotice
-		files = append(files, discord.NewFile(attachmentFileName(result.Format), "", bytes.NewReader([]byte(result.Text))))
+		files = append(files, discord.NewFile(AttachmentFileName, "", bytes.NewReader([]byte(result.Text))))
 	}
 	for _, f := range result.Files {
 		files = append(files, discord.NewFile(f.Name, "", bytes.NewReader(f.Content)))
 	}
 	return discord.NewMessageUpdate().WithContent(content).WithFiles(files...).WithAllowedMentions(&noAllowedMentions)
-}
-
-// attachmentFileName は、本文の記法に合うファイル名を返す。markdown は拡張子を .md にして、閲覧時に整形されるようにする。
-func attachmentFileName(format command.TextFormat) string {
-	if format == command.TextFormatMarkdown {
-		return MarkdownAttachmentFileName
-	}
-	return AttachmentFileName
 }
 
 func utf16Length(s string) int {

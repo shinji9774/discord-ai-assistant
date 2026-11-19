@@ -17,6 +17,8 @@ const (
 	contentType     = "application/json"
 	// finish_reasons が内容による拒否のときの接頭辞。
 	filterReasonPrefix = "Filter reason:"
+	// 固定のネガティブプロンプトと利用者分の区切り。
+	negativePromptSeparator = ", "
 )
 
 // invokeClient は Bedrock Runtime のクライアントのうち使うメソッドだけ。
@@ -56,23 +58,31 @@ type stabilityResponse struct {
 }
 
 // FromText は Stable Image Core に 1 回だけ生成を依頼する。
-func (g *StabilityGenerator) FromText(ctx context.Context, req TextRequest) ([]byte, error) {
+func (g *StabilityGenerator) FromText(ctx context.Context, prompt Prompt, aspectRatio string) ([]byte, error) {
 	return g.invoke(ctx, g.cfg.CoreModelID, coreRequest{
-		Prompt:         req.Prompt + g.cfg.DiagramStyleSuffix,
-		AspectRatio:    req.AspectRatio,
-		NegativePrompt: g.cfg.NegativePrompt,
+		Prompt:         prompt.Positive + g.cfg.DiagramStyleSuffix,
+		AspectRatio:    aspectRatio,
+		NegativePrompt: g.negativePrompt(prompt),
 		OutputFormat:   outputFormatPNG,
 	})
 }
 
 // FromSketch は Control Sketch の推論プロファイルに 1 回だけ生成を依頼する。縦横比は送らない。
-func (g *StabilityGenerator) FromSketch(ctx context.Context, req SketchRequest) ([]byte, error) {
+func (g *StabilityGenerator) FromSketch(ctx context.Context, prompt Prompt, source []byte) ([]byte, error) {
 	return g.invoke(ctx, g.cfg.SketchModelID, sketchRequest{
-		Prompt:         req.Prompt + g.cfg.DiagramStyleSuffix,
-		Image:          base64.StdEncoding.EncodeToString(req.Source),
-		NegativePrompt: g.cfg.NegativePrompt,
+		Prompt:         prompt.Positive + g.cfg.DiagramStyleSuffix,
+		Image:          base64.StdEncoding.EncodeToString(source),
+		NegativePrompt: g.negativePrompt(prompt),
 		OutputFormat:   outputFormatPNG,
 	})
+}
+
+// negativePrompt は設定の固定値に、利用者が避けたい要素を足す。
+func (g *StabilityGenerator) negativePrompt(prompt Prompt) string {
+	if prompt.Negative == "" {
+		return g.cfg.NegativePrompt
+	}
+	return g.cfg.NegativePrompt + negativePromptSeparator + prompt.Negative
 }
 
 func (g *StabilityGenerator) invoke(ctx context.Context, modelID string, request any) ([]byte, error) {

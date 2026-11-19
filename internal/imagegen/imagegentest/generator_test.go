@@ -18,10 +18,11 @@ var (
 func TestGenerator_FromTextWithImage_ReturnsImageAndRecordsRequest(t *testing.T) {
 	// Arrange: 決めた画像を返す fake
 	fake := &imagegentest.Generator{Image: pngBytes}
-	req := imagegen.TextRequest{Prompt: "a cat", AspectRatio: "16:9"}
+	prompt := imagegen.Prompt{Positive: "a cat", Negative: "dog"}
+	const aspectRatio = "16:9"
 
 	// Act
-	got, err := fake.FromText(context.Background(), req)
+	got, err := fake.FromText(context.Background(), prompt, aspectRatio)
 
 	// Assert: 画像を返し、依頼は FromText の記録だけに残る
 	if err != nil {
@@ -30,7 +31,7 @@ func TestGenerator_FromTextWithImage_ReturnsImageAndRecordsRequest(t *testing.T)
 	if !reflect.DeepEqual(got, pngBytes) {
 		t.Errorf("image = %q, want %q", got, pngBytes)
 	}
-	if want := []imagegen.TextRequest{req}; !reflect.DeepEqual(fake.TextRequests, want) {
+	if want := []imagegentest.TextCall{{Prompt: prompt, AspectRatio: aspectRatio}}; !reflect.DeepEqual(fake.TextRequests, want) {
 		t.Errorf("TextRequests = %+v, want %+v", fake.TextRequests, want)
 	}
 	if len(fake.SketchRequests) != 0 {
@@ -41,10 +42,11 @@ func TestGenerator_FromTextWithImage_ReturnsImageAndRecordsRequest(t *testing.T)
 func TestGenerator_FromSketchWithImage_ReturnsImageAndRecordsRequest(t *testing.T) {
 	// Arrange: 決めた画像を返す fake
 	fake := &imagegentest.Generator{Image: pngBytes}
-	req := imagegen.SketchRequest{Prompt: "a cat", Source: []byte("jpeg")}
+	prompt := imagegen.Prompt{Positive: "a cat", Negative: "dog"}
+	source := []byte("jpeg")
 
 	// Act
-	got, err := fake.FromSketch(context.Background(), req)
+	got, err := fake.FromSketch(context.Background(), prompt, source)
 
 	// Assert: 画像を返し、依頼は FromSketch の記録だけに残る
 	if err != nil {
@@ -53,7 +55,7 @@ func TestGenerator_FromSketchWithImage_ReturnsImageAndRecordsRequest(t *testing.
 	if !reflect.DeepEqual(got, pngBytes) {
 		t.Errorf("image = %q, want %q", got, pngBytes)
 	}
-	if want := []imagegen.SketchRequest{req}; !reflect.DeepEqual(fake.SketchRequests, want) {
+	if want := []imagegentest.SketchCall{{Prompt: prompt, Source: source}}; !reflect.DeepEqual(fake.SketchRequests, want) {
 		t.Errorf("SketchRequests = %+v, want %+v", fake.SketchRequests, want)
 	}
 	if len(fake.TextRequests) != 0 {
@@ -67,8 +69,8 @@ func TestGenerator_ContentFilteredErr_IsDistinguishableFromOtherErrors(t *testin
 	other := &imagegentest.Generator{Err: errGenerationFailed}
 
 	// Act
-	_, filteredErr := filtered.FromText(context.Background(), imagegen.TextRequest{})
-	_, otherErr := other.FromSketch(context.Background(), imagegen.SketchRequest{})
+	_, filteredErr := filtered.FromText(context.Background(), imagegen.Prompt{}, "")
+	_, otherErr := other.FromSketch(context.Background(), imagegen.Prompt{}, nil)
 
 	// Assert: 拒否だけが ErrContentFiltered と判別でき、失敗のとき画像は返らない
 	if !errors.Is(filteredErr, imagegen.ErrContentFiltered) {
@@ -82,15 +84,15 @@ func TestGenerator_ContentFilteredErr_IsDistinguishableFromOtherErrors(t *testin
 func TestGenerator_CalledTwice_RecordsRequestsInOrder(t *testing.T) {
 	// Arrange
 	fake := &imagegentest.Generator{Image: pngBytes}
-	first := imagegen.TextRequest{Prompt: "first"}
-	second := imagegen.TextRequest{Prompt: "second"}
+	first := imagegen.Prompt{Positive: "first"}
+	second := imagegen.Prompt{Positive: "second"}
 
 	// Act
-	_, _ = fake.FromText(context.Background(), first)
-	_, _ = fake.FromText(context.Background(), second)
+	_, _ = fake.FromText(context.Background(), first, "1:1")
+	_, _ = fake.FromText(context.Background(), second, "1:1")
 
 	// Assert
-	if want := []imagegen.TextRequest{first, second}; !reflect.DeepEqual(fake.TextRequests, want) {
+	if want := []imagegentest.TextCall{{Prompt: first, AspectRatio: "1:1"}, {Prompt: second, AspectRatio: "1:1"}}; !reflect.DeepEqual(fake.TextRequests, want) {
 		t.Errorf("TextRequests = %+v, want %+v", fake.TextRequests, want)
 	}
 }

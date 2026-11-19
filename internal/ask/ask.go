@@ -65,10 +65,7 @@ func (c *Command) Execute(ctx context.Context, inv command.Invocation) (command.
 	if err != nil {
 		return command.Result{}, err
 	}
-	return command.Result{
-		Text:   command.FormatAnswer(question, session.answerBody(result.Text), result.Truncated),
-		Format: command.TextFormatMarkdown,
-	}, nil
+	return command.Result{Text: command.FormatAnswer(question, session.answerBody(result.Text), result.Truncated)}, nil
 }
 
 // toolRequest は、Web 検索のツールを使える、回答の依頼を作る。

@@ -9,20 +9,15 @@ import (
 // ErrContentFiltered は、モデルが内容を理由に生成を拒んだことを表す。
 var ErrContentFiltered = errors.New("imagegen: content filtered by the model")
 
-// TextRequest は文章からの生成の依頼。
-type TextRequest struct {
-	Prompt      string // 英語の指示文
-	AspectRatio string
-}
-
-// SketchRequest はラフからの生成の依頼。縦横比は元の画像に従うので持たない。
-type SketchRequest struct {
-	Prompt string // 英語の指示文
-	Source []byte // PNG または JPEG
+// Prompt は画像を生成するモデルへ渡す、英語の指示文と避けたい要素。
+type Prompt struct {
+	Positive string
+	Negative string // 空のときは、利用者が避けたい要素を指定していない
 }
 
 // Generator は PNG 画像を 1 枚返す。
 type Generator interface {
-	FromText(ctx context.Context, req TextRequest) ([]byte, error)
-	FromSketch(ctx context.Context, req SketchRequest) ([]byte, error)
+	FromText(ctx context.Context, prompt Prompt, aspectRatio string) ([]byte, error)
+	// FromSketch の縦横比は元の画像に従う。source は PNG または JPEG。
+	FromSketch(ctx context.Context, prompt Prompt, source []byte) ([]byte, error)
 }

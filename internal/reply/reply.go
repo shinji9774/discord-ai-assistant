@@ -8,10 +8,9 @@ import (
 )
 
 const (
-	DiscordContentLimit        = 2000 // Discord が本文に許す文字数（UTF-16 のコード単位）
-	AttachmentFileName         = "result.txt"
-	MarkdownAttachmentFileName = "result.md"
-	AttachmentNotice           = "結果が長いため、ファイルに出力しました。"
+	DiscordContentLimit = 2000 // Discord が本文に許す文字数（UTF-16 のコード単位）
+	AttachmentFileName  = "result.txt"
+	AttachmentNotice    = "結果が長いため、ファイルに出力しました。"
 )
 
 // Responder はコマンドの実行結果を、実行依頼元の interaction へ返す。

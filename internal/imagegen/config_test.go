@@ -16,8 +16,8 @@ var testConfig = Config{
 		MaxAspect:          2.5,
 		ResizedJPEGQuality: 90,
 	},
-	Screening: ScreeningConfig{
+	PromptWriter: PromptWriterConfig{
 		MaxOutputTokens: 2048,
-		Instruction:     "screen the request",
+		Instruction:     "write the prompt",
 	},
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -15,8 +16,9 @@ import (
 )
 
 const (
-	stabilityTestPrompt      = "A flowchart of a login flow."
-	stabilityTestAspectRatio = "16:9"
+	stabilityTestPrompt       = "A flowchart of a login flow."
+	stabilityTestAspectRatio  = "16:9"
+	stabilityTestUserNegative = "text, people"
 )
 
 var (
@@ -73,12 +75,12 @@ func assertInvokeRequest(t *testing.T, fake *bedrockfake.Server, wantModelID str
 }
 
 // 条件: 指示文と縦横比を指定して FromText を呼ぶ。
-// 内容: Stable Image Core に、指示文の末尾へ画風の句を足した prompt、aspect_ratio、negative_prompt、output_format png を送り、画像を返す。
+// 内容: Stable Image Core に、指示文の末尾へ画風の句を足した prompt、aspect_ratio、設定の固定値だけの negative_prompt、output_format png を送り、画像を返す。
 func TestFromText_BuildsCoreRequest(t *testing.T) {
 	generator, fake := newStabilityGenerator(t)
 	fake.RespondWithImage(stabilityTestImage)
 
-	got, err := generator.FromText(context.Background(), TextRequest{Prompt: stabilityTestPrompt, AspectRatio: stabilityTestAspectRatio})
+	got, err := generator.FromText(context.Background(), Prompt{Positive: stabilityTestPrompt}, stabilityTestAspectRatio)
 
 	if err != nil {
 		t.Fatalf("FromText() error = %v", err)
@@ -100,7 +102,7 @@ func TestFromSketch_BuildsSketchRequestWithBase64Image(t *testing.T) {
 	generator, fake := newStabilityGenerator(t)
 	fake.RespondWithImage(stabilityTestImage)
 
-	got, err := generator.FromSketch(context.Background(), SketchRequest{Prompt: stabilityTestPrompt, Source: stabilityTestSource})
+	got, err := generator.FromSketch(context.Background(), Prompt{Positive: stabilityTestPrompt}, stabilityTestSource)
 
 	if err != nil {
 		t.Fatalf("FromSketch() error = %v", err)
@@ -116,6 +118,32 @@ func TestFromSketch_BuildsSketchRequestWithBase64Image(t *testing.T) {
 	})
 }
 
+// 条件: 利用者が避けたい要素（Negative）を持つ Prompt で FromText と FromSketch を呼ぶ。
+// 内容: どちらも negative_prompt が、設定の固定値の後ろに ", " で利用者分を足した文字列になる。
+func TestFromText_UserNegativePrompt_AppendsToConfiguredNegativePrompt(t *testing.T) {
+	prompt := Prompt{Positive: stabilityTestPrompt, Negative: stabilityTestUserNegative}
+	wantNegative := testConfig.NegativePrompt + ", " + stabilityTestUserNegative
+	generator, fake := newStabilityGenerator(t)
+	fake.RespondWithImage(stabilityTestImage)
+
+	_, _ = generator.FromText(context.Background(), prompt, stabilityTestAspectRatio)
+	_, _ = generator.FromSketch(context.Background(), prompt, stabilityTestSource)
+
+	var gotNegatives []string
+	for _, request := range fake.InvokeRequests() {
+		var body struct {
+			NegativePrompt string `json:"negative_prompt"`
+		}
+		if err := json.Unmarshal([]byte(request.Body), &body); err != nil {
+			t.Fatalf("json.Unmarshal(%q) error = %v", request.Body, err)
+		}
+		gotNegatives = append(gotNegatives, body.NegativePrompt)
+	}
+	if want := []string{wantNegative, wantNegative}; !reflect.DeepEqual(gotNegatives, want) {
+		t.Errorf("negative_prompt = %q, want %q", gotNegatives, want)
+	}
+}
+
 // 条件: 終了理由が 3 種の Filter reason のいずれかである。
 // 内容: FromText も FromSketch も ErrContentFiltered を返す。
 func TestFromText_FilterReason_ReturnsErrContentFiltered(t *testing.T) {
@@ -124,8 +152,8 @@ func TestFromText_FilterReason_ReturnsErrContentFiltered(t *testing.T) {
 			generator, fake := newStabilityGenerator(t)
 			fake.RespondWithFinishReason(reason)
 
-			_, textErr := generator.FromText(context.Background(), TextRequest{Prompt: stabilityTestPrompt})
-			_, sketchErr := generator.FromSketch(context.Background(), SketchRequest{Prompt: stabilityTestPrompt, Source: stabilityTestSource})
+			_, textErr := generator.FromText(context.Background(), Prompt{Positive: stabilityTestPrompt}, stabilityTestAspectRatio)
+			_, sketchErr := generator.FromSketch(context.Background(), Prompt{Positive: stabilityTestPrompt}, stabilityTestSource)
 
 			if !errors.Is(textErr, ErrContentFiltered) || !errors.Is(sketchErr, ErrContentFiltered) {
 				t.Errorf("errors = %v, %v, want both ErrContentFiltered", textErr, sketchErr)
@@ -140,7 +168,7 @@ func TestFromText_InferenceError_ReturnsError(t *testing.T) {
 	generator, fake := newStabilityGenerator(t)
 	fake.RespondWithFinishReason("Inference error")
 
-	_, err := generator.FromText(context.Background(), TextRequest{Prompt: stabilityTestPrompt})
+	_, err := generator.FromText(context.Background(), Prompt{Positive: stabilityTestPrompt}, stabilityTestAspectRatio)
 
 	if err == nil || errors.Is(err, ErrContentFiltered) {
 		t.Errorf("FromText() error = %v, want non-filter error", err)
@@ -153,7 +181,7 @@ func TestFromText_NoImage_ReturnsError(t *testing.T) {
 	generator, fake := newStabilityGenerator(t)
 	fake.RespondWithImage(nil)
 
-	_, err := generator.FromText(context.Background(), TextRequest{Prompt: stabilityTestPrompt})
+	_, err := generator.FromText(context.Background(), Prompt{Positive: stabilityTestPrompt}, stabilityTestAspectRatio)
 
 	if err == nil || errors.Is(err, ErrContentFiltered) {
 		t.Errorf("FromText() error = %v, want non-filter error", err)

@@ -13,15 +13,15 @@ import (
 )
 
 const (
-	CommandName       = "image"
-	OptionPrompt      = "prompt"
-	OptionAspectRatio = "aspect_ratio"
-	OptionSource      = "source"
+	CommandName          = "image"
+	OptionPrompt         = "prompt"
+	OptionNegativePrompt = "negative_prompt"
+	OptionAspectRatio    = "aspect_ratio"
+	OptionSource         = "source"
 
 	DefaultAspectRatio = "1:1"
 	OutputFileName     = "image.png"
 
-	messageRejected            = "この依頼は図以外の画像を求めているため、生成しませんでした。生成できるのは、図解・模式図、フローチャート・構成図、アイコン・ピクトグラム・ロゴです。"
 	messageContentFiltered     = "内容が原因で、画像を生成できませんでした。文章または元にする画像を変えて、もう一度実行してください。"
 	messageSourceNotAcceptable = "元にする画像を受け付けられませんでした。受け付けられるのは、PNG または JPEG で、10 MB 以下、各辺 64 ピクセル以上、総画素数 25,000,000 以下（例: 5712×4284）、縦横比 1:2.5 から 2.5:1 の画像です。"
 )
@@ -59,6 +59,11 @@ func (c *Command) Definition() discord.SlashCommandCreate {
 				Name:        OptionPrompt,
 				Description: "図にしたい内容の文章",
 				Required:    true,
+				MaxLength:   &maxLength,
+			},
+			discord.ApplicationCommandOptionString{
+				Name:        OptionNegativePrompt,
+				Description: "生成したくない要素（任意）",
 				MaxLength:   &maxLength,
 			},
 			discord.ApplicationCommandOptionString{
@@ -107,18 +112,15 @@ func (c *Command) Execute(ctx context.Context, inv command.Invocation) (command.
 		}
 	}
 	prompt := inv.Options[OptionPrompt]
-	screened, err := screen(ctx, c.text, c.cfg.Screening, prompt)
+	written, err := writePrompt(ctx, c.text, c.cfg.PromptWriter, prompt, inv.Options[OptionNegativePrompt])
 	if err != nil {
 		return command.Result{}, err
 	}
-	if !screened.Allowed {
-		return command.Result{Text: messageRejected}, nil
-	}
 	var image []byte
 	if hasSource {
-		image, err = c.images.FromSketch(ctx, SketchRequest{Prompt: screened.EnglishPrompt, Source: source})
+		image, err = c.images.FromSketch(ctx, written, source)
 	} else {
-		image, err = c.images.FromText(ctx, TextRequest{Prompt: screened.EnglishPrompt, AspectRatio: aspectRatio})
+		image, err = c.images.FromText(ctx, written, aspectRatio)
 	}
 	if errors.Is(err, ErrContentFiltered) {
 		return command.Result{Text: messageContentFiltered}, nil

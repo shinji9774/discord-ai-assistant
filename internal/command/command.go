@@ -31,18 +31,9 @@ type Attachment struct {
 
 // Result はコマンドの実行結果。Discord に返す本文と添付ファイル。
 type Result struct {
-	Text   string
-	Format TextFormat
-	Files  []File
+	Text  string
+	Files []File
 }
-
-// TextFormat は Result.Text の記法。長文を添付に回すときのファイル形式を決める。
-type TextFormat int
-
-const (
-	TextFormatPlain TextFormat = iota // ゼロ値。既存コマンドはこのまま
-	TextFormatMarkdown
-)
 
 // File は Discord に添付するファイル。
 type File struct {
