@@ -19,9 +19,8 @@ func main() {
 		os.Exit(1)
 	}
 	cfg := register.Config{
-		ApplicationID: os.Getenv(register.EnvApplicationID),
-		BotToken:      os.Getenv(register.EnvBotToken),
-		APIBaseURL:    os.Getenv(discordapi.EnvBaseURL),
+		BotToken:   os.Getenv(register.EnvBotToken),
+		APIBaseURL: os.Getenv(discordapi.EnvBaseURL),
 	}
 	if err := register.Run(context.Background(), cfg, catalog.Definitions(appConfig), os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "register:", err)

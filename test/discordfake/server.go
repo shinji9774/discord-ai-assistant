@@ -18,11 +18,16 @@ const (
 	originalMessage  = "@original"
 	messagesSegment  = "messages"
 	commandsSegment  = "commands"
+	applicationsSeg  = "applications"
+	currentAppSeg    = "@me"
 	fakeSnowflake    = "1"
 	fakeVersion      = "1"
 	rejectedBody     = `{"message":"rejected by fake"}`
 	authorizationKey = "Authorization"
 )
+
+// FakeApplicationID は GET /applications/@me が返す application id。disgo は snowflake を要求するため数字だけにする。
+const FakeApplicationID = "123456789012345678"
 
 // Response は応答の更新（PATCH .../webhooks/{app}/{token}/messages/@original）。
 type Response struct {
@@ -43,15 +48,16 @@ type messagePayload struct {
 	Content string `json:"content"`
 }
 
-// Server は Discord REST のうち応答の更新とコマンド登録、および添付ファイルのダウンロード（GET）に応える http.Handler。
+// Server は Discord REST のうち応答の更新とコマンド登録、application 情報の取得、および添付ファイルのダウンロード（GET）に応える http.Handler。
 type Server struct {
-	mu            sync.Mutex
-	failStatus    int
-	responses     []Response
-	nextUnread    int           // WaitForResponse がまだ渡していない最初の応答の位置
-	responseAdded chan struct{} // 応答が届くたびに閉じて作り直す
-	registrations []Registration
-	attachments   map[string]string // URL のパス → 中身
+	mu                     sync.Mutex
+	failStatus             int
+	registrationFailStatus int // 0 以外ならコマンド登録だけをこの status で失敗させる
+	responses              []Response
+	nextUnread             int           // WaitForResponse がまだ渡していない最初の応答の位置
+	responseAdded          chan struct{} // 応答が届くたびに閉じて作り直す
+	registrations          []Registration
+	attachments            map[string]string // URL のパス → 中身
 }
 
 func New() *Server {
@@ -67,6 +73,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveResponseUpdate(w, r, segments)
 	case r.Method == http.MethodPut && isRegistrationPath(segments):
 		s.serveRegistration(w, r, segments)
+	case r.Method == http.MethodGet && isCurrentApplicationPath(segments):
+		s.serveCurrentApplication(w, r)
 	case r.Method == http.MethodGet:
 		s.serveAttachment(w, r)
 	default:
@@ -84,6 +92,12 @@ func isResponseUpdatePath(segments []string) bool {
 func isRegistrationPath(segments []string) bool {
 	n := len(segments)
 	return n >= 2 && segments[n-1] == commandsSegment
+}
+
+// パスの末尾 .../applications/@me で判定する。
+func isCurrentApplicationPath(segments []string) bool {
+	n := len(segments)
+	return n >= 2 && segments[n-2] == applicationsSeg && segments[n-1] == currentAppSeg
 }
 
 func (s *Server) serveResponseUpdate(w http.ResponseWriter, r *http.Request, segments []string) {
@@ -127,11 +141,21 @@ func (s *Server) serveRegistration(w http.ResponseWriter, r *http.Request, segme
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.rejectIfFailing(w) {
+	if s.rejectIfFailing(w) || s.rejectRegistrationIfFailing(w) {
 		return
 	}
 	s.registrations = append(s.registrations, reg)
 	writeJSON(w, definitions)
+}
+
+// serveCurrentApplication は Bot トークンの持ち主の application として FakeApplicationID を返す。
+func (s *Server) serveCurrentApplication(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rejectIfFailing(w) {
+		return
+	}
+	writeJSON(w, map[string]any{"id": FakeApplicationID})
 }
 
 // serveAttachment は AddAttachment で登録したパスの中身を返す。未登録なら 404。
@@ -153,6 +177,17 @@ func (s *Server) rejectIfFailing(w http.ResponseWriter) bool {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(s.failStatus)
+	_, _ = io.WriteString(w, rejectedBody)
+	return true
+}
+
+// rejectRegistrationIfFailing は FailRegistrationWith 中なら失敗を書き込んで真を返す。s.mu を保持して呼ぶ。
+func (s *Server) rejectRegistrationIfFailing(w http.ResponseWriter) bool {
+	if s.registrationFailStatus == 0 {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(s.registrationFailStatus)
 	_, _ = io.WriteString(w, rejectedBody)
 	return true
 }
@@ -258,11 +293,18 @@ func (s *Server) FailWith(status int) {
 	s.failStatus = status
 }
 
+// FailRegistrationWith は以後のコマンド登録だけを指定の status の失敗にする。他の依頼には影響しない。
+func (s *Server) FailRegistrationWith(status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.registrationFailStatus = status
+}
+
 // Reset は記録と設定を初期化する。
 func (s *Server) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.failStatus, s.responses, s.nextUnread, s.registrations, s.attachments = 0, nil, 0, nil, map[string]string{}
+	s.failStatus, s.registrationFailStatus, s.responses, s.nextUnread, s.registrations, s.attachments = 0, 0, nil, 0, nil, map[string]string{}
 	if s.responseAdded == nil {
 		s.responseAdded = make(chan struct{})
 	}

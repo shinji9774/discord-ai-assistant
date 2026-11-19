@@ -306,28 +306,22 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
 
 `/translate`、`/ask`、`/image`、`/help` を Discord に登録する。ローカルでビルドしたイメージの中にある `/register` を使う。
 
-1. bot トークンを SSM から取り出す。
-
-   ```sh
-   export DISCORD_BOT_TOKEN=$(aws ssm get-parameter \
-     --region ap-northeast-1 \
-     --name /discord-ai-assistant/bot-token \
-     --with-decryption \
-     --query Parameter.Value \
-     --output text)
-   export DISCORD_APPLICATION_ID=<Application ID>
-   ```
-
-2. デプロイ済みのリリースタグを checkout する。`vX.Y.Z` は「4. リリース」で push したタグ。登録されるのはビルドしたソースのコマンド定義なので、デプロイ済みと同じタグでビルドしないと、Discord の画面の選択肢と実際の動作がずれる。
+1. デプロイ済みのリリースタグを checkout する。`vX.Y.Z` は「4. リリース」で push したタグ。登録されるのはビルドしたソースのコマンド定義なので、デプロイ済みと同じタグでビルドしないと、Discord の画面の選択肢と実際の動作がずれる。
 
    ```sh
    git checkout vX.Y.Z
    ```
 
-3. イメージをビルドして登録を実行する。`make image` が作る `discord-ai-assistant:latest` を `make register` が既定で使うので、ECR へのログインは不要。
+2. 登録用イメージをビルドして登録を実行する。
 
    ```sh
-   make image register
+   make image-register register
+   ```
+
+   AWS のプロファイルを変えるときは `AWS_PROFILE` を付ける。
+
+   ```sh
+   make image register AWS_PROFILE=<プロファイル名>
    ```
 
    成功すると登録したコマンドの名前が 1 行ずつ出る。終わったら作業ブランチに戻す。
@@ -336,11 +330,7 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
    git switch -
    ```
 
-4. 作業が終わったら、シェルからトークンを消す。
-
-   ```sh
-   unset DISCORD_BOT_TOKEN
-   ```
+使う AWS の認証情報には、`/discord-ai-assistant/bot-token` への `ssm:GetParameter` と、その SecureString を復号する権限（パラメータの KMS キーへの `kms:Decrypt`）が必要。
 
 ## 7. サーバへの招待と利用制限
 

@@ -1,5 +1,10 @@
 IMAGE ?= discord-ai-assistant:latest
+REGISTER_IMAGE ?= discord-ai-assistant:register
 IT_IMAGE ?= discord-ai-assistant:it
+
+# bot トークンを持つ SSM パラメータ（SecureString）のリージョンと名前
+AWS_REGION ?= ap-northeast-1
+BOT_TOKEN_PARAMETER_NAME ?= /discord-ai-assistant/bot-token
 
 # go.mod の go 行から golang イメージのバージョンを決める
 GO_VERSION := $(shell awk '$$1 == "go" { print $$2 }' go.mod)
@@ -37,11 +42,16 @@ vet:
 test:
 	go test -v ./...
 
-image:
-	docker build --target runtime -t $(IMAGE) .
+image-register:
+	docker build --target register -t $(REGISTER_IMAGE) .
 
 image-it:
 	docker build --target it -t $(IT_IMAGE) .
+
+image-runtime:
+	docker build --target runtime -t $(IMAGE) .
+
+image: image-runtime image-register image-it
 
 # イメージは事前に image-it か別の手段で作っておく
 test-it:
@@ -65,5 +75,9 @@ docker-test-it: docker-cache-volume
 	$(DOCKER_GO_RUN) make test-it
 
 # 秘密情報は -e 名前 で渡し、値をコマンドラインに展開しない
+# AWS profile は aws CLI が読む AWS_PROFILE に任せる（make register AWS_PROFILE=xxx でも AWS_PROFILE=xxx make register でも効く）
+# aws が失敗したら docker run へ進まないよう、代入と export を分ける
 register:
-	docker run --rm -e DISCORD_APPLICATION_ID -e DISCORD_BOT_TOKEN --entrypoint /register $(IMAGE)
+	DISCORD_BOT_TOKEN=$$(aws ssm get-parameter --region $(AWS_REGION) --name $(BOT_TOKEN_PARAMETER_NAME) --with-decryption --query Parameter.Value --output text) && \
+	export DISCORD_BOT_TOKEN && \
+	docker run --rm -e DISCORD_BOT_TOKEN $(REGISTER_IMAGE)
