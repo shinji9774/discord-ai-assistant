@@ -39,6 +39,9 @@ DOCKER_GO_RUN = docker run --rm \
 vet:
 	go vet ./...
 
+lint:
+	go run github.com/rhysd/actionlint/cmd/actionlint@latest .github/workflows/*.yml
+
 test:
 	go test -v ./...
 
