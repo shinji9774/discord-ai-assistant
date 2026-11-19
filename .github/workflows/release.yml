@@ -59,9 +59,30 @@ jobs:
           no-execute-changeset: true
           no-delete-failed-changeset: true
           change-set-name: ${{ steps.tag.outputs.changeset_name }}
-      - name: Show change set name
+      # public リポジトリのため、プロパティの値・PhysicalResourceId は summary に出さない
+      - name: Write change set summary
         env:
           CHANGESET_NAME: ${{ steps.changeset.outputs.change-set-name }}
+          CHANGES_SUMMARY: ${{ steps.changeset.outputs.changes-summary }}
           STACK_NAME: ${{ vars.APP_STACK_NAME }}
         run: |
-          echo "Change set created: ${CHANGESET_NAME} (stack: ${STACK_NAME})" | tee -a "${GITHUB_STEP_SUMMARY}"
+          {
+            echo "## CloudFormation change set"
+            echo
+            echo "- Stack: \`${STACK_NAME}\`"
+            echo "- Change set: \`${CHANGESET_NAME}\`"
+            echo "- Console: [Open the stack in the AWS console](https://${AWS_REGION}.console.aws.amazon.com/cloudformation/home?region=${AWS_REGION}#/stacks?filteringText=${STACK_NAME}) (see the \"Change sets\" tab)"
+            echo
+            printf '%s' "${CHANGES_SUMMARY}" | jq -r '
+              def changed_properties:
+                [(.Details // [])[].Target | (.Name // .Attribute)] | unique | if length == 0 then "-" else join(", ") end;
+              if (.changes | length) == 0 then
+                "No resource changes."
+              else
+                "| Action | Logical ID | Type | Replacement | Changed properties |",
+                "|---|---|---|---|---|",
+                (.changes[].ResourceChange
+                  | "| \(.Action) | \(.LogicalResourceId) | \(.ResourceType) | \(.Replacement // "-") | \(changed_properties) |"),
+                (if .truncated then "", "> Showing \(.changes | length) of \(.totalChanges) changes." else empty end)
+              end'
+          } | tee -a "${GITHUB_STEP_SUMMARY}"

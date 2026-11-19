@@ -253,10 +253,13 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
    git tag v1.0.0 && git push origin v1.0.0
    ```
 
-2. GitHub の「Actions」タブで `Release` ワークフローの結果を開く。成功していれば、最後のステップ「Show change set name」の出力とジョブのサマリに、change set の名前が出る。タグ `v1.0.0` の change set 名は `release-v1-0-0`（バージョンの `.` が `-` に変わる）。
+2. GitHub の「Actions」タブで `Release` ワークフローの結果を開く。成功していれば、最後のステップ「Write change set summary」の出力とジョブのサマリに、change set の名前に加えて、変更されるリソースの一覧（値は出さない）と AWS コンソールのスタック画面へのリンクが出る。タグ `v1.0.0` の change set 名は `release-v1-0-0`（バージョンの `.` が `-` に変わる）。
 
    ```
-   Change set created: release-v1-0-0 (stack: discord-ai-assistant)
+   ## CloudFormation change set
+
+   - Stack: `discord-ai-assistant`
+   - Change set: `release-v1-0-0`
    ```
 
 3. change set の内容を確認する。`<スタック名>` は `APP_STACK_NAME` の値。
