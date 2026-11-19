@@ -8,10 +8,6 @@ Parameters:
   DiscordPublicKey:
     Type: String
     Description: Discord アプリの公開鍵（16 進数）
-  BedrockModelId:
-    Type: String
-    Description: Bedrock の推論プロファイル ID
-    Default: jp.amazon.nova-2-lite-v1:0
   BotTokenParameterName:
     Type: String
     Description: bot トークンを入れた SSM の SecureString のパラメータ名
@@ -82,15 +78,10 @@ Resources:
                 Effect: Allow
                 Action: bedrock:InvokeModel
                 Resource: "*"
-              - Sid: InvokeImageGenerationModels
+              - Sid: SearchWeb
                 Effect: Allow
-                Action: bedrock:InvokeModel
-                Resource:
-                  - !Sub arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/stability.stable-image-core-v1:1
-                  - !Sub arn:${AWS::Partition}:bedrock:us-west-2:${AWS::AccountId}:inference-profile/us.stability.stable-image-control-sketch-v1:0
-                  - !Sub arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/stability.stable-image-control-sketch-v1:0
-                  - !Sub arn:${AWS::Partition}:bedrock:us-east-2::foundation-model/stability.stable-image-control-sketch-v1:0
-                  - !Sub arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/stability.stable-image-control-sketch-v1:0
+                Action: bedrock-agentcore:InvokeWebSearch
+                Resource: !Sub arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:aws:tool/web-search.v1
               - Sid: TranslateText
                 Effect: Allow
                 Action:
@@ -142,7 +133,6 @@ Resources:
       Role: !GetAtt WorkerRole.Arn
       Environment:
         Variables:
-          BEDROCK_MODEL_ID: !Ref BedrockModelId
           BOT_TOKEN_PARAMETER_NAME: !Ref BotTokenParameterName
 
   # 非同期呼び出しの再試行を止める（同じコマンドを二重に実行しない）

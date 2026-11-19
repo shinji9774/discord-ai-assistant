@@ -34,6 +34,11 @@ func (g *BedrockGenerator) Generate(ctx context.Context, req Request) (Result, e
 	if err != nil {
 		return Result{}, fmt.Errorf("bedrock converse: %w", err)
 	}
+	return resultOf(out)
+}
+
+// resultOf は応答から、文章と、上限で打ち切られたかを取り出す。
+func resultOf(out *bedrockruntime.ConverseOutput) (Result, error) {
 	text, err := firstText(out)
 	if err != nil {
 		return Result{}, err

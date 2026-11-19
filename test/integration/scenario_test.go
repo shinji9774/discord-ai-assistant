@@ -22,9 +22,11 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 
+	"discord-ai-assistant/test/bedrockfake"
 	"discord-ai-assistant/test/discordfake"
 	"discord-ai-assistant/test/ssmfake"
 	"discord-ai-assistant/test/translatefake"
+	"discord-ai-assistant/test/websearchfake"
 )
 
 const (
@@ -37,6 +39,8 @@ const (
 	deferredResponse    = `{"type":5}`
 	// 公開範囲で「実行者だけ」を選んだときの処理中の表示（flags 64 は ephemeral）。
 	privateDeferredResponse = `{"type":5,"data":{"flags":64}}`
+
+	textModelID = "jp.amazon.nova-2-lite-v1:0" // config.yaml の text_model_id
 
 	imageCoreModelID        = "stability.stable-image-core-v1:1"
 	imageRegion             = "us-west-2"
@@ -59,13 +63,14 @@ const (
 	imageSourceNotice     = "元にする画像を受け付けられませんでした。受け付けられるのは、PNG または JPEG で、10 MB 以下、各辺 64 ピクセル以上、総画素数 25,000,000 以下（例: 5712×4284）、縦横比 1:2.5 から 2.5:1 の画像です。"
 )
 
-// resetFakes は各テストの先頭で呼び、Discord・Bedrock・Translate・Lambda の fake を初期状態に戻す。
+// resetFakes は各テストの先頭で呼び、Discord・Bedrock・Translate・Lambda・Web 検索の fake を初期状態に戻す。
 // ssmfake は worker の起動時の記録を検証に使うので初期化しない。
 func resetFakes() {
 	discord.Reset()
 	bedrock.Reset()
 	translateF.Reset()
 	lambdaF.Reset()
+	webSearch.Reset()
 	forwardToWorker()
 }
 
@@ -291,7 +296,7 @@ func discordReply(content string, files map[string]string) discordfake.Response 
 }
 
 // 条件: Amazon Translate が「こんにちは」を返し、/translate text:Hello を受ける。
-// 内容: ingress が 200 {"type":5} を返し、Discord へ原文つきの翻訳結果が返信される。
+// 内容: ingress が 200 {"type":5} を返し、Discord へ原文つきの翻訳結果が返信される。Web は検索しない。
 func TestTranslate_ValidCommand_RepliesTranslationWithOriginal(t *testing.T) {
 	resetFakes()
 	translateF.RespondWith("こんにちは")
@@ -301,6 +306,7 @@ func TestTranslate_ValidCommand_RepliesTranslationWithOriginal(t *testing.T) {
 
 	assertDeferred(t, got)
 	assertDiscordResponse(t, discordReply("> Hello\n\nこんにちは", map[string]string{}))
+	assertNoWebSearch(t)
 }
 
 // 条件: discordfake に memo.txt を置き、/translate file:memo.txt to:en を resolved.attachments つきで受ける。Amazon Translate が「Hello」を返す。
@@ -322,7 +328,7 @@ func TestTranslate_FileAttached_RepliesTranslatedFile(t *testing.T) {
 }
 
 // 条件: Bedrock が「プログラミング言語です」を end_turn で返し、/ask question:Go とは？ を受ける。
-// 内容: Discord へ質問つきの回答が返信される。
+// 内容: Discord へ質問つきの回答が返信される。Web は検索しない。
 func TestAsk_ValidCommand_RepliesAnswerWithQuestion(t *testing.T) {
 	resetFakes()
 	bedrock.RespondWith("プログラミング言語です", "end_turn")
@@ -331,10 +337,88 @@ func TestAsk_ValidCommand_RepliesAnswerWithQuestion(t *testing.T) {
 	invokeIngress(t, body, ingressPrivate)
 
 	assertDiscordResponse(t, discordReply("> Go とは？\n\nプログラミング言語です", map[string]string{}))
+	assertNoWebSearch(t)
+}
+
+const (
+	webSearchQuestion = "Go の最新版は？"
+	webSearchQuery    = "Go 最新版"
+	webSearchSources  = "出典:\n[1] Go のリリース <https://go.dev/doc/devel/release>"
+	// defaultResultsPerSearch は、config.yaml の ask.web_search.results_per_search の値。
+	defaultResultsPerSearch = 5
+)
+
+// searchThenAnswer は、Bedrock が Web 検索を 1 回求めてから answer を返し、
+// Web 検索が「Go のリリース」のページを 1 件返すように、fake を準備する。
+func searchThenAnswer(answer string) {
+	bedrock.RespondWithToolUse(bedrockfake.ToolUse{ID: "tool-1", Name: "web_search", Input: map[string]string{"query": webSearchQuery}})
+	bedrock.RespondWith(answer, "end_turn")
+	webSearch.RespondWith(websearchfake.Result{Title: "Go のリリース", URL: "https://go.dev/doc/devel/release", Text: "go1.27 が公開されました。"})
+}
+
+// assertNoWebSearch は、Web 検索が 1 回も呼ばれていないことを確かめる。
+func assertNoWebSearch(t *testing.T) {
+	t.Helper()
+	if requests := webSearch.Requests(); len(requests) != 0 {
+		t.Errorf("web search requests = %+v, want none", requests)
+	}
+}
+
+// 条件: Bedrock が web_search（query: Go 最新版）を求め、その後「最新版は 1.27 です[1]。」を end_turn で返す。Web 検索は 1 件のページを返す。/ask question:Go の最新版は？ を受ける。
+// 内容: Discord へ、質問・回答・出典（タイトルと、山かっこで囲んだ URL）が返信される。Web 検索へは、ツールの ID・モデルが求めた検索文・設定の件数が届く。
+func TestAsk_ModelSearchesWeb_RepliesAnswerWithSources(t *testing.T) {
+	resetFakes()
+	searchThenAnswer("最新版は 1.27 です[1]。")
+	body := commandBody(t, "ask", "question", webSearchQuestion)
+
+	invokeIngress(t, body, ingressPrivate)
+
+	assertDiscordResponse(t, discordReply(
+		"> Go の最新版は？\n\n最新版は 1.27 です[1]。\n\n"+webSearchSources,
+		map[string]string{},
+	))
+	wantRequests := []websearchfake.Request{{WebSearchID: "web-search.v1", Query: webSearchQuery, MaxResults: defaultResultsPerSearch}}
+	if requests := webSearch.Requests(); !reflect.DeepEqual(requests, wantRequests) {
+		t.Errorf("Requests() = %+v, want %+v", requests, wantRequests)
+	}
+}
+
+// 条件: Bedrock が Web 検索を求めた後、2000 文字に [1] を付けた回答を返す。Web 検索は 1 件のページを返す。
+// 内容: 回答と出典を合わせると Discord の本文の上限を超えるので、質問・回答・出典の全体が result.txt で返信される。
+func TestAsk_AnswerWithSourcesOverContentLimit_AttachesResultFile(t *testing.T) {
+	resetFakes()
+	answer := strings.Repeat("あ", 2000) + "[1]"
+	searchThenAnswer(answer)
+	body := commandBody(t, "ask", "question", webSearchQuestion)
+
+	invokeIngress(t, body, ingressPrivate)
+
+	assertDiscordResponse(t, discordReply(
+		"結果が長いため、ファイルに出力しました。",
+		map[string]string{"result.txt": "> Go の最新版は？\n\n" + answer + "\n\n" + webSearchSources},
+	))
+}
+
+// 条件: worker にモデル ID の環境変数を渡さずに、/ask question:Go とは？ を受ける。
+// 内容: 設定ファイルの text_model_id のモデルが 1 回だけ呼ばれる（7.6）。
+func TestAsk_ValidCommand_InvokesTextModelFromConfig(t *testing.T) {
+	resetFakes()
+	body := commandBody(t, "ask", "question", "Go とは？")
+
+	invokeIngress(t, body, ingressPrivate)
+
+	waitForDiscordResponse(t)
+	var modelIDs []string
+	for _, request := range bedrock.Requests() {
+		modelIDs = append(modelIDs, request.ModelID)
+	}
+	if want := []string{textModelID}; !reflect.DeepEqual(modelIDs, want) {
+		t.Errorf("model IDs = %v, want %v", modelIDs, want)
+	}
 }
 
 // 条件: 審査が許可を返し、画像生成が画像を返す。/image prompt:ユーザー認証の流れ を受ける。
-// 内容: ingress が 200 {"type":5} を返し、Discord へ原文と image.png が投稿される。画像生成の依頼は Core のモデル ID・us-west-2・縦横比 1:1 で届く。
+// 内容: ingress が 200 {"type":5} を返し、Discord へ原文と image.png が投稿される。画像生成の依頼は Core のモデル ID・us-west-2・縦横比 1:1 で届く。Web は検索しない。
 func TestImage_PromptOnly_PostsImageWithOriginalPrompt(t *testing.T) {
 	resetFakes()
 	bedrock.RespondWith(screeningAllowed, "end_turn")
@@ -349,6 +433,7 @@ func TestImage_PromptOnly_PostsImageWithOriginalPrompt(t *testing.T) {
 	if invocations := imageInvocations(t); !reflect.DeepEqual(invocations, wantInvocations) {
 		t.Errorf("画像生成の依頼 = %+v, want %+v", invocations, wantInvocations)
 	}
+	assertNoWebSearch(t)
 }
 
 // 条件: /image prompt:ユーザー認証の流れ visibility:private を受ける。

@@ -10,10 +10,7 @@ import (
 	"discord-ai-assistant/internal/reply"
 )
 
-const (
-	ReplyReserve              = 10 * time.Second // 失敗通知の返信のために残す時間
-	UnsupportedCommandMessage = "対応していないコマンドです。"
-)
+const UnsupportedCommandMessage = "対応していないコマンドです。"
 
 const (
 	msgUnsupportedCommand = "unsupported command"
@@ -30,13 +27,14 @@ const (
 
 // Handler は Invocation 1 回分のコマンドを実行して返信する。
 type Handler struct {
-	registry  *command.Registry
-	responder reply.Responder
-	logger    *slog.Logger
+	registry     *command.Registry
+	responder    reply.Responder
+	logger       *slog.Logger
+	replyReserve time.Duration // 失敗通知の返信のために残す時間
 }
 
-func NewHandler(registry *command.Registry, responder reply.Responder, logger *slog.Logger) *Handler {
-	return &Handler{registry: registry, responder: responder, logger: logger}
+func NewHandler(registry *command.Registry, responder reply.Responder, logger *slog.Logger, replyReserve time.Duration) *Handler {
+	return &Handler{registry: registry, responder: responder, logger: logger, replyReserve: replyReserve}
 }
 
 // Handle はコマンドを実行して結果を返信する。実行か返信に失敗したら失敗メッセージを返信し、元のエラーを返す。
@@ -62,7 +60,7 @@ func (h *Handler) Handle(ctx context.Context, inv command.Invocation) error {
 
 // executeAndReply は返信の時間を残した ctx でコマンドを実行し、結果を返信する。
 func (h *Handler) executeAndReply(ctx context.Context, cmd command.Command, inv command.Invocation) (command.Result, error) {
-	execCtx, cancel := withReplyReserve(ctx)
+	execCtx, cancel := withReplyReserve(ctx, h.replyReserve)
 	defer cancel()
 	if execCtx.Err() != nil {
 		return command.Result{}, execCtx.Err()
@@ -88,11 +86,11 @@ func (h *Handler) notifyFailure(ctx context.Context, inv command.Invocation, res
 	}
 }
 
-// withReplyReserve は ctx の deadline の ReplyReserve 前で切れる ctx を返す。deadline が無ければ ctx のまま。
-func withReplyReserve(ctx context.Context) (context.Context, context.CancelFunc) {
+// withReplyReserve は ctx の deadline の reserve 前で切れる ctx を返す。deadline が無ければ ctx のまま。
+func withReplyReserve(ctx context.Context, reserve time.Duration) (context.Context, context.CancelFunc) {
 	deadline, ok := ctx.Deadline()
 	if !ok {
 		return context.WithCancel(ctx)
 	}
-	return context.WithDeadline(ctx, deadline.Add(-ReplyReserve))
+	return context.WithDeadline(ctx, deadline.Add(-reserve))
 }

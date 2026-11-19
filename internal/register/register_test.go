@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"discord-ai-assistant/internal/catalog"
+	"discord-ai-assistant/internal/config/configtest"
 	"discord-ai-assistant/internal/register"
 	"discord-ai-assistant/test/discordfake"
 )
@@ -29,7 +30,7 @@ func newConfig(t *testing.T) (register.Config, *discordfake.Server) {
 func TestRun_Success_ReplacesGlobalCommandsWithAllDefinitions(t *testing.T) {
 	cfg, fake := newConfig(t)
 
-	err := register.Run(context.Background(), cfg, catalog.Definitions(), &bytes.Buffer{})
+	err := register.Run(context.Background(), cfg, catalog.Definitions(configtest.Load(t)), &bytes.Buffer{})
 
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -46,7 +47,7 @@ func TestRun_Success_PrintsRegisteredCommandNames(t *testing.T) {
 	cfg, _ := newConfig(t)
 	var stdout bytes.Buffer
 
-	err := register.Run(context.Background(), cfg, catalog.Definitions(), &stdout)
+	err := register.Run(context.Background(), cfg, catalog.Definitions(configtest.Load(t)), &stdout)
 
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -62,7 +63,7 @@ func TestRun_DiscordFails_ReturnsErrorWithoutToken(t *testing.T) {
 	cfg, fake := newConfig(t)
 	fake.FailWith(401)
 
-	err := register.Run(context.Background(), cfg, catalog.Definitions(), &bytes.Buffer{})
+	err := register.Run(context.Background(), cfg, catalog.Definitions(configtest.Load(t)), &bytes.Buffer{})
 
 	if err == nil {
 		t.Fatal("Run() error = nil, want error")
@@ -78,7 +79,7 @@ func TestRun_MissingBotToken_ReturnsError(t *testing.T) {
 	cfg, _ := newConfig(t)
 	cfg.BotToken = ""
 
-	err := register.Run(context.Background(), cfg, catalog.Definitions(), &bytes.Buffer{})
+	err := register.Run(context.Background(), cfg, catalog.Definitions(configtest.Load(t)), &bytes.Buffer{})
 
 	if err == nil || err.Error() != "DISCORD_BOT_TOKEN is not set" {
 		t.Errorf("Run() error = %v, want %q", err, "DISCORD_BOT_TOKEN is not set")
@@ -91,7 +92,7 @@ func TestRun_MissingApplicationID_ReturnsError(t *testing.T) {
 	cfg, _ := newConfig(t)
 	cfg.ApplicationID = ""
 
-	err := register.Run(context.Background(), cfg, catalog.Definitions(), &bytes.Buffer{})
+	err := register.Run(context.Background(), cfg, catalog.Definitions(configtest.Load(t)), &bytes.Buffer{})
 
 	if err == nil || err.Error() != "DISCORD_APPLICATION_ID is not set" {
 		t.Errorf("Run() error = %v, want %q", err, "DISCORD_APPLICATION_ID is not set")

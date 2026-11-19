@@ -4,16 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"discord-ai-assistant/internal/command"
+	"discord-ai-assistant/internal/config/configtest"
 	"discord-ai-assistant/internal/translate"
 	"discord-ai-assistant/internal/translate/translatetest"
 )
 
 func invocation(options map[string]string) command.Invocation {
 	return command.Invocation{CommandName: "translate", Options: options}
+}
+
+const bytesPerKB = 1000
+
+func translateConfig(t *testing.T) translate.Config {
+	t.Helper()
+	return configtest.Load(t).Translate
 }
 
 func fileInvocation(options map[string]string, file command.Attachment) command.Invocation {
@@ -32,7 +42,7 @@ func attachment(filename string, size int) command.Attachment {
 // 内容: 指定した言語（英語 en）への翻訳依頼が 1 件、Translator へ渡る。
 func TestExecute_ToSpecified_TranslatesIntoThatLanguage(t *testing.T) {
 	fake := &translatetest.Translator{}
-	cmd := translate.New(fake, &translatetest.AttachmentFetcher{})
+	cmd := translate.New(fake, &translatetest.AttachmentFetcher{}, translateConfig(t))
 
 	_, _ = cmd.Execute(context.Background(), invocation(map[string]string{"text": "こんにちは", "to": "en"}))
 
@@ -46,7 +56,7 @@ func TestExecute_ToSpecified_TranslatesIntoThatLanguage(t *testing.T) {
 // 内容: 英語（en）への翻訳依頼が 1 件、Translator へ渡る。
 func TestExecute_ToOmitted_TranslatesIntoEnglish(t *testing.T) {
 	fake := &translatetest.Translator{}
-	cmd := translate.New(fake, &translatetest.AttachmentFetcher{})
+	cmd := translate.New(fake, &translatetest.AttachmentFetcher{}, translateConfig(t))
 
 	_, _ = cmd.Execute(context.Background(), invocation(map[string]string{"text": "Hello"}))
 
@@ -60,7 +70,7 @@ func TestExecute_ToOmitted_TranslatesIntoEnglish(t *testing.T) {
 // 内容: エラーが返り、Translator は呼ばれない。
 func TestExecute_ToNotInChoices_ReturnsErrorWithoutTranslating(t *testing.T) {
 	fake := &translatetest.Translator{}
-	cmd := translate.New(fake, &translatetest.AttachmentFetcher{})
+	cmd := translate.New(fake, &translatetest.AttachmentFetcher{}, translateConfig(t))
 
 	_, err := cmd.Execute(context.Background(), invocation(map[string]string{"text": "Hello", "to": "xx"}))
 
@@ -73,7 +83,7 @@ func TestExecute_ToNotInChoices_ReturnsErrorWithoutTranslating(t *testing.T) {
 // 内容: 原文の引用の下に翻訳文が置かれた Result が返る。
 func TestExecute_Success_ReturnsOriginalQuotedAboveTranslation(t *testing.T) {
 	fake := &translatetest.Translator{Result: "こんにちは"}
-	cmd := translate.New(fake, &translatetest.AttachmentFetcher{})
+	cmd := translate.New(fake, &translatetest.AttachmentFetcher{}, translateConfig(t))
 
 	got, _ := cmd.Execute(context.Background(), invocation(map[string]string{"text": "Hello"}))
 
@@ -87,7 +97,7 @@ func TestExecute_Success_ReturnsOriginalQuotedAboveTranslation(t *testing.T) {
 func TestExecute_TranslatorFails_ReturnsError(t *testing.T) {
 	failure := errors.New("translate failed")
 	fake := &translatetest.Translator{Err: failure}
-	cmd := translate.New(fake, &translatetest.AttachmentFetcher{})
+	cmd := translate.New(fake, &translatetest.AttachmentFetcher{}, translateConfig(t))
 
 	_, err := cmd.Execute(context.Background(), invocation(map[string]string{"text": "Hello"}))
 
@@ -100,7 +110,7 @@ func TestExecute_TranslatorFails_ReturnsError(t *testing.T) {
 // 内容: 指定を促す案内文が返り、Translator は呼ばれない。
 func TestExecute_NoTextNorFile_ReturnsGuidanceWithoutTranslating(t *testing.T) {
 	fake := &translatetest.Translator{}
-	cmd := translate.New(fake, &translatetest.AttachmentFetcher{})
+	cmd := translate.New(fake, &translatetest.AttachmentFetcher{}, translateConfig(t))
 
 	got, err := cmd.Execute(context.Background(), invocation(map[string]string{}))
 
@@ -115,7 +125,7 @@ func TestExecute_NoTextNorFile_ReturnsGuidanceWithoutTranslating(t *testing.T) {
 func TestExecute_BothTextAndFile_ReturnsGuidanceWithoutTranslating(t *testing.T) {
 	fake := &translatetest.Translator{}
 	fetcher := &translatetest.AttachmentFetcher{}
-	cmd := translate.New(fake, fetcher)
+	cmd := translate.New(fake, fetcher, translateConfig(t))
 
 	got, err := cmd.Execute(context.Background(), fileInvocation(map[string]string{"text": "Hello"}, attachment("memo.txt", 10)))
 
@@ -130,7 +140,7 @@ func TestExecute_BothTextAndFile_ReturnsGuidanceWithoutTranslating(t *testing.T)
 func TestExecute_UnsupportedFileExtension_ReturnsGuidanceWithoutFetching(t *testing.T) {
 	fake := &translatetest.Translator{}
 	fetcher := &translatetest.AttachmentFetcher{}
-	cmd := translate.New(fake, fetcher)
+	cmd := translate.New(fake, fetcher, translateConfig(t))
 
 	got, err := cmd.Execute(context.Background(), fileInvocation(nil, attachment("memo.pdf", 10)))
 
@@ -145,7 +155,7 @@ func TestExecute_UnsupportedFileExtension_ReturnsGuidanceWithoutFetching(t *test
 func TestExecute_FileOverSizeLimit_ReturnsGuidanceWithoutFetching(t *testing.T) {
 	fake := &translatetest.Translator{}
 	fetcher := &translatetest.AttachmentFetcher{}
-	cmd := translate.New(fake, fetcher)
+	cmd := translate.New(fake, fetcher, translateConfig(t))
 
 	got, err := cmd.Execute(context.Background(), fileInvocation(nil, attachment("memo.txt", 100001)))
 
@@ -159,7 +169,7 @@ func TestExecute_FileOverSizeLimit_ReturnsGuidanceWithoutFetching(t *testing.T) 
 // 内容: 翻訳依頼が受理され、memo_en.txt に訳文が入った Result が返る。
 func TestExecute_FileAtSizeLimit_ReturnsTranslatedFile(t *testing.T) {
 	fake := &translatetest.Translator{DocumentResult: []byte("Hello")}
-	cmd := translate.New(fake, &translatetest.AttachmentFetcher{Content: []byte("こんにちは")})
+	cmd := translate.New(fake, &translatetest.AttachmentFetcher{Content: []byte("こんにちは")}, translateConfig(t))
 
 	got, err := cmd.Execute(context.Background(), fileInvocation(map[string]string{"to": "en"}, attachment("memo.txt", 100000)))
 
@@ -177,7 +187,7 @@ func TestExecute_FileAtSizeLimit_ReturnsTranslatedFile(t *testing.T) {
 func TestExecute_UppercaseHTMLExtension_TranslatesAsHTMLIntoEnglish(t *testing.T) {
 	fake := &translatetest.Translator{}
 	fetcher := &translatetest.AttachmentFetcher{Content: []byte("<p>Hello</p>")}
-	cmd := translate.New(fake, fetcher)
+	cmd := translate.New(fake, fetcher, translateConfig(t))
 
 	_, _ = cmd.Execute(context.Background(), fileInvocation(nil, attachment("NOTES.HTML", 12)))
 
@@ -194,7 +204,7 @@ func TestExecute_UppercaseHTMLExtension_TranslatesAsHTMLIntoEnglish(t *testing.T
 // 内容: Word 文書の形式で Translator へ渡る。
 func TestExecute_DocxFile_TranslatesAsWordDocument(t *testing.T) {
 	fake := &translatetest.Translator{}
-	cmd := translate.New(fake, &translatetest.AttachmentFetcher{Content: []byte("docx")})
+	cmd := translate.New(fake, &translatetest.AttachmentFetcher{Content: []byte("docx")}, translateConfig(t))
 
 	_, _ = cmd.Execute(context.Background(), fileInvocation(nil, attachment("report.docx", 4)))
 
@@ -208,7 +218,7 @@ func TestExecute_DocxFile_TranslatesAsWordDocument(t *testing.T) {
 func TestExecute_FetchFails_ReturnsErrorWithoutTranslating(t *testing.T) {
 	failure := errors.New("fetch failed")
 	fake := &translatetest.Translator{}
-	cmd := translate.New(fake, &translatetest.AttachmentFetcher{Err: failure})
+	cmd := translate.New(fake, &translatetest.AttachmentFetcher{Err: failure}, translateConfig(t))
 
 	_, err := cmd.Execute(context.Background(), fileInvocation(nil, attachment("memo.txt", 10)))
 
@@ -222,7 +232,7 @@ func TestExecute_FetchFails_ReturnsErrorWithoutTranslating(t *testing.T) {
 func TestExecute_TranslateDocumentFails_ReturnsError(t *testing.T) {
 	failure := errors.New("translate document failed")
 	fake := &translatetest.Translator{DocumentErr: failure}
-	cmd := translate.New(fake, &translatetest.AttachmentFetcher{Content: []byte("x")})
+	cmd := translate.New(fake, &translatetest.AttachmentFetcher{Content: []byte("x")}, translateConfig(t))
 
 	_, err := cmd.Execute(context.Background(), fileInvocation(nil, attachment("memo.txt", 1)))
 
@@ -234,7 +244,7 @@ func TestExecute_TranslateDocumentFails_ReturnsError(t *testing.T) {
 // 条件: 定義を取得する。
 // 内容: サーバ内専用で、text（最大 3000 文字）・file（添付）・to がすべて任意の定義になる。
 func TestDefinition_Always_IsGuildOnlyWithOptionalTextAndFile(t *testing.T) {
-	cmd := translate.New(&translatetest.Translator{}, &translatetest.AttachmentFetcher{})
+	cmd := translate.New(&translatetest.Translator{}, &translatetest.AttachmentFetcher{}, translateConfig(t))
 
 	got, err := json.Marshal(withoutChoices(t, cmd.Definition()))
 
@@ -253,7 +263,7 @@ func TestDefinition_Always_IsGuildOnlyWithOptionalTextAndFile(t *testing.T) {
 // 条件: 定義を取得する。
 // 内容: to の choices が、日本語 ja から始まりペルシア語 fa で終わる 25 件の（名前, コード）になる。
 func TestDefinition_Always_ToHasTwentyFiveLanguageChoices(t *testing.T) {
-	cmd := translate.New(&translatetest.Translator{}, &translatetest.AttachmentFetcher{})
+	cmd := translate.New(&translatetest.Translator{}, &translatetest.AttachmentFetcher{}, translateConfig(t))
 
 	got := toChoices(t, cmd.Definition())
 
@@ -324,5 +334,33 @@ func assertJSONEqual(t *testing.T, got, want string) {
 	}
 	if !reflect.DeepEqual(gotValue, wantValue) {
 		t.Errorf("JSON = %s, want %s", got, want)
+	}
+}
+
+// 条件: 設定の上限より 1 バイト大きいファイルを指定して実行する。
+// 内容: 案内文に書かれた上限（KB）が、設定の値と一致する（7.5）。
+func TestExecute_FileOverSizeLimit_GuidanceStatesConfiguredLimit(t *testing.T) {
+	cfg := translateConfig(t)
+	cmd := translate.New(&translatetest.Translator{}, &translatetest.AttachmentFetcher{}, cfg)
+	want := fmt.Sprintf("%d KB", cfg.MaxFileSizeBytes/bytesPerKB)
+
+	got, err := cmd.Execute(context.Background(), fileInvocation(nil, attachment("memo.txt", cfg.MaxFileSizeBytes+1)))
+
+	if err != nil || !strings.Contains(got.Text, want) {
+		t.Errorf("Execute() = %q, %v, want it to contain %q", got.Text, err, want)
+	}
+}
+
+// 条件: コマンドの定義を取得する。
+// 内容: ファイルの説明に書かれた上限（KB）が、設定の値と一致する（7.5）。
+func TestDefinition_FileDescription_StatesConfiguredLimit(t *testing.T) {
+	cfg := translateConfig(t)
+	cmd := translate.New(nil, nil, cfg)
+	want := fmt.Sprintf("%d KB まで", cfg.MaxFileSizeBytes/bytesPerKB)
+
+	got, err := json.Marshal(cmd.Definition())
+
+	if err != nil || !strings.Contains(string(got), want) {
+		t.Errorf("Definition() = %s, %v, want it to contain %q", got, err, want)
 	}
 }

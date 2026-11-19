@@ -13,16 +13,8 @@ import (
 )
 
 const (
-	BedrockRegion = "us-west-2"
-	coreModelID   = "stability.stable-image-core-v1:1"
-	sketchModelID = "us.stability.stable-image-control-sketch-v1:0"
-
 	outputFormatPNG = "png"
 	contentType     = "application/json"
-	// 指示文の末尾に足して、画風を図に寄せる英語の句。
-	diagramStyleSuffix = ", clean flat diagram with simple shapes, clear lines and labels, white background"
-	// 写真や絵画を避ける英語の句。
-	negativePrompt = "photograph, photorealistic, painting, oil painting, watercolor, 3d render"
 	// finish_reasons が内容による拒否のときの接頭辞。
 	filterReasonPrefix = "Filter reason:"
 )
@@ -35,12 +27,13 @@ type invokeClient interface {
 // StabilityGenerator は Bedrock の Stability の画像生成モデルを呼ぶ Generator。
 type StabilityGenerator struct {
 	client invokeClient
+	cfg    Config
 }
 
 var _ Generator = (*StabilityGenerator)(nil)
 
-func NewStabilityGenerator(client invokeClient) *StabilityGenerator {
-	return &StabilityGenerator{client: client}
+func NewStabilityGenerator(client invokeClient, cfg Config) *StabilityGenerator {
+	return &StabilityGenerator{client: client, cfg: cfg}
 }
 
 type coreRequest struct {
@@ -64,20 +57,20 @@ type stabilityResponse struct {
 
 // FromText は Stable Image Core に 1 回だけ生成を依頼する。
 func (g *StabilityGenerator) FromText(ctx context.Context, req TextRequest) ([]byte, error) {
-	return g.invoke(ctx, coreModelID, coreRequest{
-		Prompt:         req.Prompt + diagramStyleSuffix,
+	return g.invoke(ctx, g.cfg.CoreModelID, coreRequest{
+		Prompt:         req.Prompt + g.cfg.DiagramStyleSuffix,
 		AspectRatio:    req.AspectRatio,
-		NegativePrompt: negativePrompt,
+		NegativePrompt: g.cfg.NegativePrompt,
 		OutputFormat:   outputFormatPNG,
 	})
 }
 
 // FromSketch は Control Sketch の推論プロファイルに 1 回だけ生成を依頼する。縦横比は送らない。
 func (g *StabilityGenerator) FromSketch(ctx context.Context, req SketchRequest) ([]byte, error) {
-	return g.invoke(ctx, sketchModelID, sketchRequest{
-		Prompt:         req.Prompt + diagramStyleSuffix,
+	return g.invoke(ctx, g.cfg.SketchModelID, sketchRequest{
+		Prompt:         req.Prompt + g.cfg.DiagramStyleSuffix,
 		Image:          base64.StdEncoding.EncodeToString(req.Source),
-		NegativePrompt: negativePrompt,
+		NegativePrompt: g.cfg.NegativePrompt,
 		OutputFormat:   outputFormatPNG,
 	})
 }

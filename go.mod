@@ -7,6 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.48.0
 	github.com/aws/aws-sdk-go-v2/config v1.33.19
 	github.com/aws/aws-sdk-go-v2/credentials v1.21.1
+	github.com/aws/aws-sdk-go-v2/service/bedrockagentcore v1.59.0
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.63.13
 	github.com/aws/aws-sdk-go-v2/service/lambda v1.116.0
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.83.0
@@ -16,6 +17,7 @@ require (
 	github.com/disgoorg/snowflake/v2 v2.0.3
 	github.com/moby/moby/api v1.56.1
 	github.com/testcontainers/testcontainers-go v0.45.0
+	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/image v0.48.0
 )
 
@@ -78,7 +80,6 @@ require (
 	go.opentelemetry.io/otel v1.44.0 // indirect
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
 )

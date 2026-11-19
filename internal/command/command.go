@@ -7,8 +7,6 @@ import (
 )
 
 const (
-	MaxInputLength  = 6000 // Discord が文字列オプションに許す最大
-	MaxOutputTokens = 16000
 	TruncatedNotice = "（上限に達したため、途中までの結果です）"
 	FailureMessage  = "処理に失敗しました。時間をおいてもう一度実行してください。"
 )

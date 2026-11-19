@@ -5,19 +5,41 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/jpeg"
 	"image/png"
 	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 
 	"discord-ai-assistant/internal/command"
+	"discord-ai-assistant/internal/config/configtest"
 	"discord-ai-assistant/internal/imagegen"
 	"discord-ai-assistant/internal/imagegen/imagegentest"
 	"discord-ai-assistant/internal/llm"
 	"discord-ai-assistant/internal/llm/llmtest"
 	"discord-ai-assistant/internal/translate/translatetest"
 )
+
+const bytesPerMB = 1_000_000
+
+func imageConfig(t *testing.T) imagegen.Config {
+	t.Helper()
+	return configtest.Load(t).Image
+}
+
+// missingPhrases は、notice に含まれない句を返す。
+func missingPhrases(notice string, phrases []string) []string {
+	var missing []string
+	for _, phrase := range phrases {
+		if !strings.Contains(notice, phrase) {
+			missing = append(missing, phrase)
+		}
+	}
+	return missing
+}
 
 const (
 	japanesePrompt = "ログインの流れを図にして"
@@ -73,7 +95,7 @@ func imageInvocation(options map[string]string) command.Invocation {
 func TestExecute_AllowedPrompt_ReturnsOriginalPromptWithImage(t *testing.T) {
 	text := &llmtest.Generator{Result: allowVerdict}
 	images := &imagegentest.Generator{Image: pngBytes}
-	cmd := imagegen.New(text, images, nil)
+	cmd := imagegen.New(text, images, nil, imageConfig(t))
 
 	got, err := cmd.Execute(context.Background(), imageInvocation(map[string]string{"prompt": japanesePrompt}))
 
@@ -94,7 +116,7 @@ func TestExecute_AllowedPrompt_ReturnsOriginalPromptWithImage(t *testing.T) {
 func TestExecute_JapanesePrompt_PassesEnglishPromptToGenerator(t *testing.T) {
 	text := &llmtest.Generator{Result: allowVerdict}
 	images := &imagegentest.Generator{Image: pngBytes}
-	cmd := imagegen.New(text, images, nil)
+	cmd := imagegen.New(text, images, nil, imageConfig(t))
 
 	got, _ := cmd.Execute(context.Background(), imageInvocation(map[string]string{"prompt": japanesePrompt}))
 
@@ -112,7 +134,7 @@ func TestExecute_JapanesePrompt_PassesEnglishPromptToGenerator(t *testing.T) {
 func TestExecute_AspectRatioChosen_PassesItToGenerator(t *testing.T) {
 	text := &llmtest.Generator{Result: allowVerdict}
 	images := &imagegentest.Generator{Image: pngBytes}
-	cmd := imagegen.New(text, images, nil)
+	cmd := imagegen.New(text, images, nil, imageConfig(t))
 
 	_, _ = cmd.Execute(context.Background(), imageInvocation(map[string]string{"prompt": japanesePrompt, "aspect_ratio": "16:9"}))
 
@@ -127,7 +149,7 @@ func TestExecute_AspectRatioChosen_PassesItToGenerator(t *testing.T) {
 func TestExecute_NoAspectRatio_UsesOneToOne(t *testing.T) {
 	text := &llmtest.Generator{Result: allowVerdict}
 	images := &imagegentest.Generator{Image: pngBytes}
-	cmd := imagegen.New(text, images, nil)
+	cmd := imagegen.New(text, images, nil, imageConfig(t))
 
 	_, _ = cmd.Execute(context.Background(), imageInvocation(map[string]string{"prompt": japanesePrompt}))
 
@@ -142,7 +164,7 @@ func TestExecute_NoAspectRatio_UsesOneToOne(t *testing.T) {
 func TestExecute_UnknownAspectRatio_ReturnsErrorWithoutScreeningOrGenerating(t *testing.T) {
 	text := &llmtest.Generator{Result: allowVerdict}
 	images := &imagegentest.Generator{Image: pngBytes}
-	cmd := imagegen.New(text, images, nil)
+	cmd := imagegen.New(text, images, nil, imageConfig(t))
 
 	_, err := cmd.Execute(context.Background(), imageInvocation(map[string]string{"prompt": japanesePrompt, "aspect_ratio": "4:3"}))
 
@@ -156,7 +178,7 @@ func TestExecute_UnknownAspectRatio_ReturnsErrorWithoutScreeningOrGenerating(t *
 func TestExecute_RejectedPrompt_ReturnsRejectionNoticeWithoutGenerating(t *testing.T) {
 	text := &llmtest.Generator{Result: rejectVerdict}
 	images := &imagegentest.Generator{Image: pngBytes}
-	cmd := imagegen.New(text, images, nil)
+	cmd := imagegen.New(text, images, nil, imageConfig(t))
 
 	got, err := cmd.Execute(context.Background(), imageInvocation(map[string]string{"prompt": "猫の写真を撮って"}))
 
@@ -178,7 +200,7 @@ func TestExecute_RejectedPrompt_ReturnsRejectionNoticeWithoutGenerating(t *testi
 func TestExecute_ScreeningFails_ReturnsErrorWithoutGenerating(t *testing.T) {
 	text := &llmtest.Generator{Err: errors.New("model unavailable")}
 	images := &imagegentest.Generator{Image: pngBytes}
-	cmd := imagegen.New(text, images, nil)
+	cmd := imagegen.New(text, images, nil, imageConfig(t))
 
 	_, err := cmd.Execute(context.Background(), imageInvocation(map[string]string{"prompt": japanesePrompt}))
 
@@ -192,7 +214,7 @@ func TestExecute_ScreeningFails_ReturnsErrorWithoutGenerating(t *testing.T) {
 func TestExecute_ContentFiltered_ReturnsContentNotice(t *testing.T) {
 	text := &llmtest.Generator{Result: allowVerdict}
 	images := &imagegentest.Generator{Err: imagegen.ErrContentFiltered}
-	cmd := imagegen.New(text, images, nil)
+	cmd := imagegen.New(text, images, nil, imageConfig(t))
 
 	got, err := cmd.Execute(context.Background(), imageInvocation(map[string]string{"prompt": japanesePrompt}))
 
@@ -211,7 +233,7 @@ func TestExecute_GenerationFails_ReturnsError(t *testing.T) {
 	failure := errors.New("inference error")
 	text := &llmtest.Generator{Result: allowVerdict}
 	images := &imagegentest.Generator{Err: failure}
-	cmd := imagegen.New(text, images, nil)
+	cmd := imagegen.New(text, images, nil, imageConfig(t))
 
 	_, err := cmd.Execute(context.Background(), imageInvocation(map[string]string{"prompt": japanesePrompt}))
 
@@ -227,7 +249,7 @@ func TestExecute_SourceGiven_CallsFromSketchWithoutAspectRatio(t *testing.T) {
 	text := &llmtest.Generator{Result: allowVerdict}
 	images := &imagegentest.Generator{Image: pngBytes}
 	fetcher := &translatetest.AttachmentFetcher{Content: source}
-	cmd := imagegen.New(text, images, fetcher)
+	cmd := imagegen.New(text, images, fetcher, imageConfig(t))
 
 	got, err := cmd.Execute(context.Background(), sourceInvocation(len(source), map[string]string{"prompt": japanesePrompt, "aspect_ratio": "4:3"}))
 
@@ -253,7 +275,7 @@ func TestExecute_SourceGiven_ScreensPromptOnly(t *testing.T) {
 	source := encodePNG(t, sourceSide, sourceSide)
 	text := &llmtest.Generator{Result: allowVerdict}
 	images := &imagegentest.Generator{Image: pngBytes}
-	cmd := imagegen.New(text, images, &translatetest.AttachmentFetcher{Content: source})
+	cmd := imagegen.New(text, images, &translatetest.AttachmentFetcher{Content: source}, imageConfig(t))
 
 	_, _ = cmd.Execute(context.Background(), sourceInvocation(len(source), map[string]string{"prompt": japanesePrompt}))
 
@@ -272,7 +294,7 @@ func TestExecute_SourceTooLarge_ReturnsSourceNoticeWithoutFetching(t *testing.T)
 	text := &llmtest.Generator{Result: allowVerdict}
 	images := &imagegentest.Generator{Image: pngBytes}
 	fetcher := &translatetest.AttachmentFetcher{}
-	cmd := imagegen.New(text, images, fetcher)
+	cmd := imagegen.New(text, images, fetcher, imageConfig(t))
 
 	got, err := cmd.Execute(context.Background(), sourceInvocation(sourceBytesLimit+1, map[string]string{"prompt": japanesePrompt}))
 
@@ -293,7 +315,7 @@ func TestExecute_SourceNotImage_ReturnsSourceNoticeWithoutScreening(t *testing.T
 	notImage := []byte("not an image")
 	text := &llmtest.Generator{Result: allowVerdict}
 	images := &imagegentest.Generator{Image: pngBytes}
-	cmd := imagegen.New(text, images, &translatetest.AttachmentFetcher{Content: notImage})
+	cmd := imagegen.New(text, images, &translatetest.AttachmentFetcher{Content: notImage}, imageConfig(t))
 
 	got, err := cmd.Execute(context.Background(), sourceInvocation(len(notImage), map[string]string{"prompt": japanesePrompt}))
 
@@ -314,7 +336,7 @@ func TestExecute_SourceFetchFails_ReturnsErrorWithoutScreening(t *testing.T) {
 	failure := errors.New("fetch failed")
 	text := &llmtest.Generator{Result: allowVerdict}
 	images := &imagegentest.Generator{Image: pngBytes}
-	cmd := imagegen.New(text, images, &translatetest.AttachmentFetcher{Err: failure})
+	cmd := imagegen.New(text, images, &translatetest.AttachmentFetcher{Err: failure}, imageConfig(t))
 
 	_, err := cmd.Execute(context.Background(), sourceInvocation(1, map[string]string{"prompt": japanesePrompt}))
 
@@ -329,7 +351,7 @@ func TestExecute_LargeSource_PassesShrunkSourceToGenerator(t *testing.T) {
 	source := encodeJPEG(t, overModelPixelsWide, overModelPixelsHigh)
 	text := &llmtest.Generator{Result: allowVerdict}
 	images := &imagegentest.Generator{Image: pngBytes}
-	cmd := imagegen.New(text, images, &translatetest.AttachmentFetcher{Content: source})
+	cmd := imagegen.New(text, images, &translatetest.AttachmentFetcher{Content: source}, imageConfig(t))
 
 	_, _ = cmd.Execute(context.Background(), sourceInvocation(len(source), map[string]string{"prompt": japanesePrompt}))
 
@@ -349,7 +371,7 @@ func TestExecute_LargeSource_PassesShrunkSourceToGenerator(t *testing.T) {
 // 内容: サーバ内専用で、prompt（必須・最大 1000 文字）・aspect_ratio（5 つの選択肢）・
 // source（任意の添付）・visibility（全員 / 実行者だけの 2 つ）を持つ定義になる。
 func TestDefinition_WithoutDependencies_IsGuildOnlyWithPromptAspectRatioSourceAndVisibility(t *testing.T) {
-	cmd := imagegen.New(nil, nil, nil)
+	cmd := imagegen.New(nil, nil, nil, imageConfig(t))
 
 	got, err := json.Marshal(cmd.Definition())
 
@@ -380,5 +402,25 @@ func assertJSONEqual(t *testing.T, got, want string) {
 	}
 	if !reflect.DeepEqual(gotValue, wantValue) {
 		t.Errorf("JSON = %s, want %s", got, want)
+	}
+}
+
+// 条件: 設定の上限より 1 バイト大きい元画像を指定する。
+// 内容: 受け付けられない旨の文言に書かれた上限値が、どれも設定の値と一致する（7.5）。
+func TestExecute_SourceTooLarge_NoticeStatesConfiguredLimits(t *testing.T) {
+	cfg := imageConfig(t)
+	cmd := imagegen.New(&llmtest.Generator{Result: allowVerdict}, &imagegentest.Generator{Image: pngBytes}, &translatetest.AttachmentFetcher{}, cfg)
+	wantPhrases := []string{
+		fmt.Sprintf("%d MB 以下", cfg.Source.MaxBytes/bytesPerMB),
+		fmt.Sprintf("各辺 %d ピクセル以上", cfg.Source.MinSide),
+		strconv.Itoa(cfg.Source.MaxPixels),
+		fmt.Sprintf("1:%v から %v:1", cfg.Source.MaxAspect, cfg.Source.MaxAspect),
+	}
+
+	got, err := cmd.Execute(context.Background(), sourceInvocation(cfg.Source.MaxBytes+1, map[string]string{"prompt": japanesePrompt}))
+
+	missing := missingPhrases(strings.ReplaceAll(got.Text, ",", ""), wantPhrases)
+	if err != nil || len(missing) != 0 {
+		t.Errorf("Execute() = %q, %v, missing %v", got.Text, err, missing)
 	}
 }

@@ -13,6 +13,7 @@ import (
 
 	"discord-ai-assistant/internal/catalog"
 	"discord-ai-assistant/internal/command"
+	"discord-ai-assistant/internal/config/configtest"
 	"discord-ai-assistant/internal/llm"
 	"discord-ai-assistant/internal/llm/llmtest"
 	"discord-ai-assistant/internal/reply/replytest"
@@ -20,8 +21,9 @@ import (
 )
 
 const (
-	failureText = "処理に失敗しました。時間をおいてもう一度実行してください。"
-	answerText  = "> Go とは？\n\nプログラミング言語です"
+	failureText  = "処理に失敗しました。時間をおいてもう一度実行してください。"
+	answerText   = "> Go とは？\n\nプログラミング言語です"
+	replyReserve = 10 * time.Second // テストの Handler が、返信のために残す時間
 )
 
 var errSend = errors.New("send failed")
@@ -35,9 +37,10 @@ func askInvocation() command.Invocation {
 	}
 }
 
-func newHandler(gen *llmtest.Generator, responder *replytest.Responder, logs *bytes.Buffer) *worker.Handler {
-	registry := catalog.New(catalog.Dependencies{Generator: gen})
-	return worker.NewHandler(registry, responder, slog.New(slog.NewJSONHandler(logs, nil)))
+func newHandler(t *testing.T, gen *llmtest.Generator, responder *replytest.Responder, logs *bytes.Buffer) *worker.Handler {
+	t.Helper()
+	registry := catalog.New(catalog.Dependencies{Generator: gen, ToolGenerator: gen}, configtest.Load(t))
+	return worker.NewHandler(registry, responder, slog.New(slog.NewJSONHandler(logs, nil)), replyReserve)
 }
 
 func replyTexts(responder *replytest.Responder) []string {
@@ -82,7 +85,7 @@ func TestHandle_UnknownCommand_RepliesUnsupportedMessage(t *testing.T) {
 	gen := &llmtest.Generator{}
 	responder := &replytest.Responder{}
 	logs := &bytes.Buffer{}
-	h := newHandler(gen, responder, logs)
+	h := newHandler(t, gen, responder, logs)
 	inv := askInvocation()
 	inv.CommandName = "unknown"
 
@@ -100,7 +103,7 @@ func TestHandle_Success_RepliesCommandResult(t *testing.T) {
 	gen := &llmtest.Generator{Result: llm.Result{Text: "プログラミング言語です"}}
 	responder := &replytest.Responder{}
 	logs := &bytes.Buffer{}
-	h := newHandler(gen, responder, logs)
+	h := newHandler(t, gen, responder, logs)
 
 	err := h.Handle(context.Background(), askInvocation())
 
@@ -116,7 +119,7 @@ func TestHandle_Success_LogsCommandNameWithoutBodies(t *testing.T) {
 	gen := &llmtest.Generator{Result: llm.Result{Text: "プログラミング言語です"}}
 	responder := &replytest.Responder{}
 	logs := &bytes.Buffer{}
-	h := newHandler(gen, responder, logs)
+	h := newHandler(t, gen, responder, logs)
 
 	_ = h.Handle(context.Background(), askInvocation())
 
@@ -132,7 +135,7 @@ func TestHandle_GeneratorFails_RepliesFailureMessageAndReturnsError(t *testing.T
 	gen := &llmtest.Generator{Err: boom}
 	responder := &replytest.Responder{}
 	logs := &bytes.Buffer{}
-	h := newHandler(gen, responder, logs)
+	h := newHandler(t, gen, responder, logs)
 
 	err := h.Handle(context.Background(), askInvocation())
 
@@ -148,7 +151,7 @@ func TestHandle_GeneratorFails_LogsInputText(t *testing.T) {
 	gen := &llmtest.Generator{Err: errors.New("boom")}
 	responder := &replytest.Responder{}
 	logs := &bytes.Buffer{}
-	h := newHandler(gen, responder, logs)
+	h := newHandler(t, gen, responder, logs)
 
 	_ = h.Handle(context.Background(), askInvocation())
 
@@ -170,7 +173,7 @@ func TestHandle_ReplyFails_LogsInputAndAnswerThenRepliesFailureMessage(t *testin
 	gen := &llmtest.Generator{Result: llm.Result{Text: "プログラミング言語です"}}
 	responder := &replytest.Responder{Errs: []error{errSend}}
 	logs := &bytes.Buffer{}
-	h := newHandler(gen, responder, logs)
+	h := newHandler(t, gen, responder, logs)
 
 	_ = h.Handle(context.Background(), askInvocation())
 
@@ -187,14 +190,14 @@ func TestHandle_ReplyFails_LogsInputAndAnswerThenRepliesFailureMessage(t *testin
 	})
 }
 
-// 条件: deadline が ReplyReserve + 50ms 後にあり、生成が ctx の終了まで止まる。
+// 条件: deadline が replyReserve + 50ms 後にあり、生成が ctx の終了まで止まる。
 // 内容: 失敗通知の時間を残して実行を打ち切り、失敗メッセージを返信して DeadlineExceeded を返す。
 func TestHandle_DeadlineNear_StopsExecutionAndRepliesFailureMessage(t *testing.T) {
 	gen := &llmtest.Generator{Block: true}
 	responder := &replytest.Responder{}
 	logs := &bytes.Buffer{}
-	h := newHandler(gen, responder, logs)
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(worker.ReplyReserve+50*time.Millisecond))
+	h := newHandler(t, gen, responder, logs)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(replyReserve+50*time.Millisecond))
 	defer cancel()
 
 	err := h.Handle(ctx, askInvocation())
@@ -205,14 +208,14 @@ func TestHandle_DeadlineNear_StopsExecutionAndRepliesFailureMessage(t *testing.T
 	}
 }
 
-// 条件: deadline が ReplyReserve より手前にあり、生成は成功する設定。
+// 条件: deadline が replyReserve より手前にあり、生成は成功する設定。
 // 内容: 生成を呼ばずに失敗メッセージを返信し、DeadlineExceeded を返す。
 func TestHandle_DeadlineWithinReplyReserve_SkipsExecutionAndRepliesFailureMessage(t *testing.T) {
 	gen := &llmtest.Generator{Result: llm.Result{Text: "プログラミング言語です"}}
 	responder := &replytest.Responder{}
 	logs := &bytes.Buffer{}
-	h := newHandler(gen, responder, logs)
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(worker.ReplyReserve-time.Second))
+	h := newHandler(t, gen, responder, logs)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(replyReserve-time.Second))
 	defer cancel()
 
 	err := h.Handle(ctx, askInvocation())

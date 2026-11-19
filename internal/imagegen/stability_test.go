@@ -17,7 +17,6 @@ import (
 const (
 	stabilityTestPrompt      = "A flowchart of a login flow."
 	stabilityTestAspectRatio = "16:9"
-	stabilityTestRegion      = BedrockRegion
 )
 
 var (
@@ -32,12 +31,12 @@ func newStabilityGenerator(t *testing.T) (*StabilityGenerator, *bedrockfake.Serv
 	server := httptest.NewServer(fake)
 	t.Cleanup(server.Close)
 	client := bedrockruntime.New(bedrockruntime.Options{
-		Region:           stabilityTestRegion,
+		Region:           testConfig.BedrockRegion,
 		BaseEndpoint:     &server.URL,
 		Credentials:      credentials.NewStaticCredentialsProvider("test-key", "test-secret", ""),
 		RetryMaxAttempts: 1,
 	})
-	return NewStabilityGenerator(client), fake
+	return NewStabilityGenerator(client, testConfig), fake
 }
 
 // canonicalJSON は JSON をキー順の揃った文字列にして、本文の全体比較を差分で読めるようにする。
@@ -65,8 +64,8 @@ func assertInvokeRequest(t *testing.T, fake *bedrockfake.Server, wantModelID str
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
-	if got[0].ModelID != wantModelID || got[0].Region != BedrockRegion {
-		t.Errorf("model/region = %q/%q, want %q/%q", got[0].ModelID, got[0].Region, wantModelID, BedrockRegion)
+	if got[0].ModelID != wantModelID || got[0].Region != testConfig.BedrockRegion {
+		t.Errorf("model/region = %q/%q, want %q/%q", got[0].ModelID, got[0].Region, wantModelID, testConfig.BedrockRegion)
 	}
 	if gotBody, want := canonicalJSON(t, got[0].Body), canonicalJSON(t, string(wantJSON)); gotBody != want {
 		t.Errorf("body = %s, want %s", gotBody, want)
@@ -88,9 +87,9 @@ func TestFromText_BuildsCoreRequest(t *testing.T) {
 		t.Errorf("FromText() = %q, want %q", got, stabilityTestImage)
 	}
 	assertInvokeRequest(t, fake, "stability.stable-image-core-v1:1", map[string]any{
-		"prompt":          stabilityTestPrompt + diagramStyleSuffix,
+		"prompt":          stabilityTestPrompt + testConfig.DiagramStyleSuffix,
 		"aspect_ratio":    stabilityTestAspectRatio,
-		"negative_prompt": negativePrompt,
+		"negative_prompt": testConfig.NegativePrompt,
 		"output_format":   "png",
 	})
 }
@@ -110,9 +109,9 @@ func TestFromSketch_BuildsSketchRequestWithBase64Image(t *testing.T) {
 		t.Errorf("FromSketch() = %q, want %q", got, stabilityTestImage)
 	}
 	assertInvokeRequest(t, fake, "us.stability.stable-image-control-sketch-v1:0", map[string]any{
-		"prompt":          stabilityTestPrompt + diagramStyleSuffix,
+		"prompt":          stabilityTestPrompt + testConfig.DiagramStyleSuffix,
 		"image":           base64.StdEncoding.EncodeToString(stabilityTestSource),
-		"negative_prompt": negativePrompt,
+		"negative_prompt": testConfig.NegativePrompt,
 		"output_format":   "png",
 	})
 }

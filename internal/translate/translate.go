@@ -18,14 +18,6 @@ const (
 	optionFile  = "file"
 	optionTo    = "to"
 
-	// MaxTextLength は text の最大文字数。
-	// Amazon Translate の TranslateText は入力を 10,000 バイト（UTF-8）までしか受け付けず、
-	// 日本語は 1 文字 3 バイトなので、3000 文字なら約 9,000 バイトで収まる。
-	MaxTextLength = 3000
-
-	// MaxFileSize は file の最大バイト数。Amazon Translate の TranslateDocument が受け付ける上限。
-	MaxFileSize = 100000
-
 	contentTypeText = "text/plain"
 	contentTypeHTML = "text/html"
 	contentTypeDocx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -50,14 +42,15 @@ var contentTypesByExtension = map[string]string{
 type Command struct {
 	translator Translator
 	fetcher    AttachmentFetcher
+	cfg        Config
 }
 
-func New(translator Translator, fetcher AttachmentFetcher) *Command {
-	return &Command{translator: translator, fetcher: fetcher}
+func New(translator Translator, fetcher AttachmentFetcher, cfg Config) *Command {
+	return &Command{translator: translator, fetcher: fetcher, cfg: cfg}
 }
 
 func (c *Command) Definition() discord.SlashCommandCreate {
-	maxLength := MaxTextLength
+	maxLength := c.cfg.MaxTextLength
 	return discord.SlashCommandCreate{
 		Name:        commandName,
 		Description: "文章またはファイルを指定した言語に翻訳します",
@@ -114,7 +107,7 @@ func (c *Command) translateFile(ctx context.Context, file command.Attachment, ta
 	if !ok {
 		return command.Result{Text: messageUnsupportedFile}, nil
 	}
-	if file.Size > MaxFileSize {
+	if file.Size > c.cfg.MaxFileSizeBytes {
 		return command.Result{Text: messageFileTooLarge}, nil
 	}
 	content, err := c.fetcher.Fetch(ctx, file.URL)

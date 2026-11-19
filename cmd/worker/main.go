@@ -7,26 +7,30 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/aws/aws-sdk-go-v2/config"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcore"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	awstranslate "github.com/aws/aws-sdk-go-v2/service/translate"
 
 	"discord-ai-assistant/internal/bottoken"
 	"discord-ai-assistant/internal/catalog"
+	"discord-ai-assistant/internal/config"
 	"discord-ai-assistant/internal/discordapi"
 	"discord-ai-assistant/internal/imagegen"
 	"discord-ai-assistant/internal/llm"
 	"discord-ai-assistant/internal/reply"
 	"discord-ai-assistant/internal/translate"
+	"discord-ai-assistant/internal/websearch"
 	"discord-ai-assistant/internal/worker"
 )
 
 const (
-	envBedrockModelID      = "BEDROCK_MODEL_ID"
 	envBotTokenParameter   = "BOT_TOKEN_PARAMETER_NAME"
+	msgConfigLoadFailed    = "config load failed"
 	msgBotTokenLoadFailed  = "bot token load failed"
 	logKeyParameter        = "parameter"
 	logKeyError            = "error"
@@ -42,16 +46,17 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
-	modelID, err := requireEnv(envBedrockModelID)
+	cfg, err := config.Load()
 	if err != nil {
-		return err
+		logger.Error(msgConfigLoadFailed, logKeyError, err.Error())
+		return fmt.Errorf("%s", msgConfigLoadFailed)
 	}
 	parameterName, err := requireEnv(envBotTokenParameter)
 	if err != nil {
 		return err
 	}
 	ctx := context.Background()
-	awsConfig, err := config.LoadDefaultConfig(ctx)
+	awsConfig, err := awsconfig.LoadDefaultConfig(ctx)
 	if err != nil {
 		return fmt.Errorf("load aws config: %w", err)
 	}
@@ -61,16 +66,18 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("%s", msgBotTokenLoadFailed)
 	}
 
-	generator := llm.NewBedrockGenerator(bedrockruntime.NewFromConfig(awsConfig), modelID)
+	generator := llm.NewBedrockGenerator(bedrockruntime.NewFromConfig(awsConfig), cfg.TextModelID)
+	searcher := websearch.NewAgentCoreSearcher(bedrockagentcore.NewFromConfig(awsConfig))
 	imageClient := bedrockruntime.NewFromConfig(awsConfig, func(o *bedrockruntime.Options) {
-		o.Region = imagegen.BedrockRegion
+		o.Region = cfg.Image.BedrockRegion
 	})
-	imageGenerator := imagegen.NewStabilityGenerator(imageClient)
+	imageGenerator := imagegen.NewStabilityGenerator(imageClient, cfg.Image)
 	translator := translate.NewAmazonTranslator(awstranslate.NewFromConfig(awsConfig))
 	fetcher := translate.NewHTTPAttachmentFetcher(http.DefaultClient)
-	registry := catalog.New(catalog.Dependencies{Generator: generator, ImageGenerator: imageGenerator, Translator: translator, Fetcher: fetcher, BotToken: token})
+	registry := catalog.New(catalog.Dependencies{Generator: generator, ToolGenerator: generator, Searcher: searcher, Logger: logger, ImageGenerator: imageGenerator, Translator: translator, Fetcher: fetcher, BotToken: token}, cfg)
 	responder := reply.NewDiscordResponder(os.Getenv(discordapi.EnvBaseURL))
-	lambda.Start(worker.NewHandler(registry, responder, logger).Handle)
+	replyReserve := time.Duration(cfg.ReplyReserveSeconds) * time.Second
+	lambda.Start(worker.NewHandler(registry, responder, logger, replyReserve).Handle)
 	return nil
 }
 

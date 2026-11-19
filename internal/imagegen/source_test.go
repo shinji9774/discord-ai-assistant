@@ -77,26 +77,26 @@ func pngHeaderOnly(width, height int) []byte {
 }
 
 func TestSourceSizeAcceptable_AtLimit_True(t *testing.T) {
-	// 条件: Discord が伝えた大きさがちょうど MaxSourceBytes
+	// 条件: Discord が伝えた大きさがちょうど testConfig.Source.MaxBytes
 	// 内容: 受け付けられる
-	attachment := command.Attachment{Size: MaxSourceBytes}
+	attachment := command.Attachment{Size: testConfig.Source.MaxBytes}
 
-	got := sourceSizeAcceptable(attachment)
+	got := sourceSizeAcceptable(testConfig.Source, attachment)
 
 	if !got {
-		t.Errorf("sourceSizeAcceptable(%d) = false, want true", attachment.Size)
+		t.Errorf("sourceSizeAcceptable(testConfig.Source, %d) = false, want true", attachment.Size)
 	}
 }
 
 func TestSourceSizeAcceptable_OverLimit_False(t *testing.T) {
-	// 条件: Discord が伝えた大きさが MaxSourceBytes を 1 バイト超える
+	// 条件: Discord が伝えた大きさが testConfig.Source.MaxBytes を 1 バイト超える
 	// 内容: 受け付けられない
-	attachment := command.Attachment{Size: MaxSourceBytes + 1}
+	attachment := command.Attachment{Size: testConfig.Source.MaxBytes + 1}
 
-	got := sourceSizeAcceptable(attachment)
+	got := sourceSizeAcceptable(testConfig.Source, attachment)
 
 	if got {
-		t.Errorf("sourceSizeAcceptable(%d) = true, want false", attachment.Size)
+		t.Errorf("sourceSizeAcceptable(testConfig.Source, %d) = true, want false", attachment.Size)
 	}
 }
 
@@ -108,10 +108,10 @@ func TestSourceImageAcceptable_RegisteredButNotAllowedFormat_False(t *testing.T)
 	})
 	content := []byte(fakeFormatMagic)
 
-	got := sourceImageAcceptable(content)
+	got := sourceImageAcceptable(testConfig.Source, content)
 
 	if got {
-		t.Errorf("sourceImageAcceptable(%s) = true, want false", fakeFormatName)
+		t.Errorf("sourceImageAcceptable(testConfig.Source, %s content) = true, want false", fakeFormatName)
 	}
 }
 
@@ -127,8 +127,8 @@ func TestSourceImageAcceptable_ByFormatAndDimensions_ReturnsExpected(t *testing.
 		{"JPEG", encodeJPEG(t, 100, 100), true},
 		{"GIF", []byte(gifHeader), false},
 		{"テキスト", []byte("not an image"), false},
-		{"各辺が下限未満（63×64）", encodePNG(t, minSourceSide-1, minSourceSide), false},
-		{"各辺が下限（64×64）", encodePNG(t, minSourceSide, minSourceSide), true},
+		{"各辺が下限未満（63×64）", encodePNG(t, testConfig.Source.MinSide-1, testConfig.Source.MinSide), false},
+		{"各辺が下限（64×64）", encodePNG(t, testConfig.Source.MinSide, testConfig.Source.MinSide), true},
 		{"総画素数が上限（5000×5000）", pngHeaderOnly(pixelLimitSide, pixelLimitSide), true},
 		{"総画素数が上限を 1 辺ぶん超える（5000×5001）", pngHeaderOnly(pixelLimitSide, pixelLimitSide+1), false},
 		{"縦横比が上限（2.5:1）", encodePNG(t, aspectLimitLongSide, aspectLimitShortSide), true},
@@ -139,10 +139,10 @@ func TestSourceImageAcceptable_ByFormatAndDimensions_ReturnsExpected(t *testing.
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sourceImageAcceptable(tc.content)
+			got := sourceImageAcceptable(testConfig.Source, tc.content)
 
 			if got != tc.want {
-				t.Errorf("sourceImageAcceptable() = %v, want %v", got, tc.want)
+				t.Errorf("sourceImageAcceptable(testConfig.Source, %s content) = %v, want %v", tc.name, got, tc.want)
 			}
 		})
 	}
@@ -159,11 +159,11 @@ func decodeConfigOf(t *testing.T, content []byte) (format string, width, height 
 }
 
 func TestFitSource_OverModelPixels_ResizesToJPEGWithinLimitKeepingAspect(t *testing.T) {
-	// 条件: 総画素数が maxModelPixels を超える 4032×3024（4:3）の JPEG
+	// 条件: 総画素数が testConfig.Source.MaxModelPixels を超える 4032×3024（4:3）の JPEG
 	// 内容: 総画素数が上限以下で、縦横比 4:3 の JPEG になる
 	content := encodeJPEG(t, photoWidth, photoHeight)
 
-	got, err := fitSource(content)
+	got, err := fitSource(testConfig.Source, content)
 
 	if err != nil {
 		t.Fatal(err)
@@ -171,23 +171,23 @@ func TestFitSource_OverModelPixels_ResizesToJPEGWithinLimitKeepingAspect(t *test
 	format, width, height := decodeConfigOf(t, got)
 	// 各辺を切り捨てるので、縦横比は短辺の 1 画素ぶんの誤差までずれうる
 	aspectError := math.Abs(float64(width)/float64(height) - float64(photoAspectNumerator)/float64(photoAspectDenominator))
-	if format != formatJPEG || width*height > maxModelPixels || aspectError > 1/float64(height) {
-		t.Errorf("fitSource() = %s %dx%d, want jpeg within %d pixels with aspect %d:%d",
-			format, width, height, maxModelPixels, photoAspectNumerator, photoAspectDenominator)
+	if format != formatJPEG || width*height > testConfig.Source.MaxModelPixels || aspectError > 1/float64(height) {
+		t.Errorf("fitSource(testConfig.Source, ) = %s %dx%d, want jpeg within %d pixels with aspect %d:%d",
+			format, width, height, testConfig.Source.MaxModelPixels, photoAspectNumerator, photoAspectDenominator)
 	}
 }
 
 func TestFitSource_AtModelPixels_ReturnsContentUnchanged(t *testing.T) {
-	// 条件: 総画素数が maxModelPixels ちょうどの 3072×3072 の PNG
+	// 条件: 総画素数が testConfig.Source.MaxModelPixels ちょうどの 3072×3072 の PNG
 	// 内容: 縮小せず、受け取ったバイト列がそのまま返る
 	content := encodePNG(t, modelLimitSide, modelLimitSide)
 
-	got, err := fitSource(content)
+	got, err := fitSource(testConfig.Source, content)
 
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(got, content) {
-		t.Errorf("fitSource() changed the content (len %d -> %d), want unchanged", len(content), len(got))
+		t.Errorf("fitSource(testConfig.Source, ) changed the content (len %d -> %d), want unchanged", len(content), len(got))
 	}
 }

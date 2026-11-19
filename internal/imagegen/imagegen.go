@@ -18,10 +18,6 @@ const (
 	OptionAspectRatio = "aspect_ratio"
 	OptionSource      = "source"
 
-	// MaxPromptLength は prompt の最大文字数。
-	// 原文を投稿の本文にそのまま載せるため、すべてが 2 単位の文字でも本文の上限（UTF-16 で 2000 単位）に収まる長さにしている。
-	MaxPromptLength = 1000
-
 	DefaultAspectRatio = "1:1"
 	OutputFileName     = "image.png"
 
@@ -46,14 +42,15 @@ type Command struct {
 	text    llm.TextGenerator
 	images  Generator
 	fetcher SourceFetcher
+	cfg     Config
 }
 
-func New(text llm.TextGenerator, images Generator, fetcher SourceFetcher) *Command {
-	return &Command{text: text, images: images, fetcher: fetcher}
+func New(text llm.TextGenerator, images Generator, fetcher SourceFetcher, cfg Config) *Command {
+	return &Command{text: text, images: images, fetcher: fetcher, cfg: cfg}
 }
 
 func (c *Command) Definition() discord.SlashCommandCreate {
-	maxLength := MaxPromptLength
+	maxLength := c.cfg.MaxPromptLength
 	return discord.SlashCommandCreate{
 		Name:        CommandName,
 		Description: "文章から図を生成します",
@@ -110,7 +107,7 @@ func (c *Command) Execute(ctx context.Context, inv command.Invocation) (command.
 		}
 	}
 	prompt := inv.Options[OptionPrompt]
-	screened, err := screen(ctx, c.text, prompt)
+	screened, err := screen(ctx, c.text, c.cfg.Screening, prompt)
 	if err != nil {
 		return command.Result{}, err
 	}
@@ -135,17 +132,17 @@ func (c *Command) Execute(ctx context.Context, inv command.Invocation) (command.
 // prepareSource は元画像を、大きさの判定 → 取得 → 形式と寸法の判定 → 必要なら縮小の順に用意する。
 // 受け付けられないときは errSourceNotAcceptable を返す。
 func (c *Command) prepareSource(ctx context.Context, attachment command.Attachment) ([]byte, error) {
-	if !sourceSizeAcceptable(attachment) {
+	if !sourceSizeAcceptable(c.cfg.Source, attachment) {
 		return nil, errSourceNotAcceptable
 	}
 	content, err := c.fetcher.Fetch(ctx, attachment.URL)
 	if err != nil {
 		return nil, fmt.Errorf("fetch source image: %w", err)
 	}
-	if !sourceImageAcceptable(content) {
+	if !sourceImageAcceptable(c.cfg.Source, content) {
 		return nil, errSourceNotAcceptable
 	}
-	return fitSource(content)
+	return fitSource(c.cfg.Source, content)
 }
 
 // aspectRatioOf は aspect_ratio オプションの値を検証する。省略時は既定の縦横比。

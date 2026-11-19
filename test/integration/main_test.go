@@ -26,6 +26,7 @@ import (
 	"discord-ai-assistant/test/lambdafake"
 	"discord-ai-assistant/test/ssmfake"
 	"discord-ai-assistant/test/translatefake"
+	"discord-ai-assistant/test/websearchfake"
 )
 
 const (
@@ -41,7 +42,6 @@ const (
 
 	botTokenParameterName = "/discord-ai-assistant/bot-token"
 	botTokenValue         = "it-bot-token"
-	bedrockModelID        = "jp.amazon.nova-2-lite-v1:0"
 	workerFunctionName    = "worker"
 )
 
@@ -55,6 +55,7 @@ var (
 	translateF *translatefake.Server
 	lambdaF    *lambdafake.Server
 	ssm        *ssmfake.Server
+	webSearch  *websearchfake.Server
 
 	workerContainer  testcontainers.Container
 	ingressContainer testcontainers.Container
@@ -86,6 +87,7 @@ func setUp(ctx context.Context) error {
 		return err
 	}
 	discord, bedrock, translateF, lambdaF, ssm = discordfake.New(), bedrockfake.New(), translatefake.New(), lambdafake.New(), ssmfake.New()
+	webSearch = websearchfake.New()
 	ssm.SetParameter(botTokenParameterName, botTokenValue)
 
 	discordURL, err = serveFake(discord)
@@ -109,13 +111,18 @@ func setUp(ctx context.Context) error {
 		return err
 	}
 
+	webSearchURL, err := serveFake(webSearch)
+	if err != nil {
+		return err
+	}
+
 	workerContainer, err = startRIE(ctx, "/worker", map[string]string{
-		"BEDROCK_MODEL_ID":                 bedrockModelID,
-		"BOT_TOKEN_PARAMETER_NAME":         botTokenParameterName,
-		"AWS_ENDPOINT_URL_BEDROCK_RUNTIME": bedrockURL,
-		"AWS_ENDPOINT_URL_TRANSLATE":       translateURL,
-		"AWS_ENDPOINT_URL_SSM":             ssmURL,
-		"DISCORD_API_BASE_URL":             discordURL,
+		"BOT_TOKEN_PARAMETER_NAME":           botTokenParameterName,
+		"AWS_ENDPOINT_URL_BEDROCK_RUNTIME":   bedrockURL,
+		"AWS_ENDPOINT_URL_TRANSLATE":         translateURL,
+		"AWS_ENDPOINT_URL_SSM":               ssmURL,
+		"DISCORD_API_BASE_URL":               discordURL,
+		"AWS_ENDPOINT_URL_BEDROCK_AGENTCORE": webSearchURL,
 	})
 	if err != nil {
 		return err

@@ -37,6 +37,23 @@ Discord の slash command から Amazon Translate と AWS Bedrock（Amazon Nova 
   - 縦横比は 1:2.5 から 2.5:1
 - 元にする画像（`source`）を指定すると、縦横比（`aspect_ratio`）の指定は使われない。
 
+### `/ask` の Web 検索
+
+`/ask` は、回答に Web の情報が必要だとモデルが判断したときに、Web を検索する。検索結果を使った回答には、根拠にしたページのタイトルとリンクが、出典として付く。
+
+- 検索には、東京リージョンの Amazon Bedrock AgentCore Web Search を使う。回答の生成は、これまでどおり国内の推論プロファイルで行う。
+- 追加の設定作業は要らない。必要な権限（`bedrock-agentcore:InvokeWebSearch`）は `cfn/app.yaml` に含まれており、change set を実行すれば使える。
+- 検索の回数に応じた費用がかかる。執筆時点では 1,000 回あたり 7 USD。1 回の `/ask` で行う検索は、最大で `ask.web_search.max_searches` 回（既定は 3 回）。最新の料金は <https://aws.amazon.com/bedrock/agentcore/pricing/> を参照する。
+- 検索結果は、その質問への回答を作る間だけ使い、保存しない。
+
+### 設定ファイル
+
+調整値（入力と出力の上限、画像の大きさの上限、検索の回数の上限、利用するモデルなど）と、モデルへの指示文は、`internal/config/config.yaml` にまとめてある。
+
+- 値を変えたら、イメージを作りなおして change set を実行する。設定ファイルはバイナリに同梱されるので、配備をせずに値を変えることはできない。
+- 値に問題がある（読めない、必要な値が欠けている、範囲の外にある）と、worker は起動に失敗し、問題のあるキーがログに出る。
+- テキスト生成のモデルは `text_model_id` で指定する。CloudFormation のパラメータ `BedrockModelId` は廃止した。既存のスタックを更新するときは、このパラメータを渡さない。
+
 ## 前提
 
 次を用意する。

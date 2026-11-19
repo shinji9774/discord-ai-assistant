@@ -76,8 +76,27 @@ type responseOutput struct {
 }
 
 type responseMessage struct {
-	Role    string      `json:"role"`
-	Content []textBlock `json:"content"`
+	Role    string `json:"role"`
+	Content []any  `json:"content"`
+}
+
+const stopReasonToolUse = "tool_use"
+
+// ToolUse は、fake がモデルの応答として返す、ツールの呼び出し。
+type ToolUse struct {
+	ID    string
+	Name  string
+	Input map[string]string
+}
+
+type toolUseBlock struct {
+	ToolUse toolUseContent `json:"toolUse"`
+}
+
+type toolUseContent struct {
+	ToolUseID string            `json:"toolUseId"`
+	Name      string            `json:"name"`
+	Input     map[string]string `json:"input"`
 }
 
 // Server は POST /model/{modelId}/converse と /invoke に応える http.Handler。
@@ -90,6 +109,9 @@ type Server struct {
 	image          []byte
 	finishReason   *string
 	invokeRequests []InvokeRequest
+
+	toolUseResponses [][]ToolUse
+	converseBodies   []string
 }
 
 func New() *Server {
@@ -122,6 +144,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.requests = append(s.requests, toRequest(modelID, req))
+	s.converseBodies = append(s.converseBodies, string(body))
 	if s.failStatus != 0 {
 		w.Header().Set(errorTypeHeader, validationError)
 		w.Header().Set("Content-Type", "application/json")
@@ -130,7 +153,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(s.successResponse())
+	_ = json.NewEncoder(w).Encode(s.nextConverseResponse())
 }
 
 func (s *Server) serveInvoke(w http.ResponseWriter, r *http.Request, modelID string) {
@@ -186,6 +209,35 @@ func (s *Server) FailWith(status int) {
 	s.failStatus = status
 }
 
+// RespondWithToolUse は、次の Converse 1 回分の応答として、ツールの呼び出しを積む。
+// 積んだ応答は、呼んだ順に 1 回ずつ使われる。使い切ると RespondWith の応答に戻る。
+func (s *Server) RespondWithToolUse(uses ...ToolUse) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.toolUseResponses = append(s.toolUseResponses, uses)
+}
+
+// ConverseBodies は、受けた Converse の依頼の本文を、受けた順に返す。
+func (s *Server) ConverseBodies() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.converseBodies...)
+}
+
+// nextConverseResponse は次の応答を返す。呼び出し元がロックを持っていること。
+func (s *Server) nextConverseResponse() converseResponse {
+	if len(s.toolUseResponses) == 0 {
+		return s.successResponse()
+	}
+	uses := s.toolUseResponses[0]
+	s.toolUseResponses = s.toolUseResponses[1:]
+	content := make([]any, 0, len(uses))
+	for _, use := range uses {
+		content = append(content, toolUseBlock{ToolUse: toolUseContent{ToolUseID: use.ID, Name: use.Name, Input: use.Input}})
+	}
+	return newConverseResponse(content, stopReasonToolUse)
+}
+
 func (s *Server) Requests() []Request {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -204,15 +256,20 @@ func (s *Server) Reset() {
 	defer s.mu.Unlock()
 	s.text, s.stopReason, s.failStatus, s.requests = defaultText, defaultStopCause, 0, nil
 	s.image, s.finishReason, s.invokeRequests = []byte(defaultImage), nil, nil
+	s.toolUseResponses, s.converseBodies = nil, nil
 }
 
 func (s *Server) successResponse() converseResponse {
+	return newConverseResponse([]any{textBlock{Text: s.text}}, s.stopReason)
+}
+
+func newConverseResponse(content []any, stopReason string) converseResponse {
 	return converseResponse{
 		Output: responseOutput{Message: responseMessage{
 			Role:    "assistant",
-			Content: []textBlock{{Text: s.text}},
+			Content: content,
 		}},
-		StopReason: s.stopReason,
+		StopReason: stopReason,
 		Usage:      map[string]int{"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
 		Metrics:    map[string]int{"latencyMs": 1},
 	}

@@ -20,7 +20,7 @@ const (
 func TestScreen_AllowVerdict_ReturnsEnglishPrompt(t *testing.T) {
 	model := &llmtest.Generator{Result: llm.Result{Text: `{"verdict":"allow","english_prompt":"` + testEnglishDraft + `"}`}}
 
-	got, err := screen(context.Background(), model, testUserPrompt)
+	got, err := screen(context.Background(), model, testConfig.Screening, testUserPrompt)
 
 	if err != nil {
 		t.Fatalf("screen() error = %v", err)
@@ -35,7 +35,7 @@ func TestScreen_AllowVerdict_ReturnsEnglishPrompt(t *testing.T) {
 func TestScreen_RejectVerdict_ReturnsNotAllowed(t *testing.T) {
 	model := &llmtest.Generator{Result: llm.Result{Text: `{"verdict":"reject","english_prompt":""}`}}
 
-	got, err := screen(context.Background(), model, "猫の写真を撮って")
+	got, err := screen(context.Background(), model, testConfig.Screening, "猫の写真を撮って")
 
 	if err != nil {
 		t.Fatalf("screen() error = %v", err)
@@ -51,7 +51,7 @@ func TestScreen_JSONInCodeBlock_IsParsed(t *testing.T) {
 	text := "```json\n{\"verdict\":\"allow\",\"english_prompt\":\"" + testEnglishDraft + "\"}\n```"
 	model := &llmtest.Generator{Result: llm.Result{Text: text}}
 
-	got, err := screen(context.Background(), model, testUserPrompt)
+	got, err := screen(context.Background(), model, testConfig.Screening, testUserPrompt)
 
 	if err != nil {
 		t.Fatalf("screen() error = %v", err)
@@ -78,7 +78,7 @@ func TestScreen_UnusableResponse_ReturnsErrorWithoutLeakingContent(t *testing.T)
 		t.Run(tt.name, func(t *testing.T) {
 			model := &llmtest.Generator{Result: tt.result}
 
-			_, err := screen(context.Background(), model, testUserPrompt)
+			_, err := screen(context.Background(), model, testConfig.Screening, testUserPrompt)
 
 			if err == nil {
 				t.Fatal("screen() error = nil, want error")
@@ -96,7 +96,7 @@ func TestScreen_ModelFails_ReturnsWrappedError(t *testing.T) {
 	failure := errors.New("model down")
 	model := &llmtest.Generator{Err: failure}
 
-	_, err := screen(context.Background(), model, testUserPrompt)
+	_, err := screen(context.Background(), model, testConfig.Screening, testUserPrompt)
 
 	if !errors.Is(err, failure) {
 		t.Errorf("screen() error = %v, want it to wrap %v", err, failure)
@@ -104,16 +104,16 @@ func TestScreen_ModelFails_ReturnsWrappedError(t *testing.T) {
 }
 
 // 条件: 許可の応答を返すモデルに利用者の文章を渡す。
-// 内容: 依頼は 1 回で、System が指示文の定数、UserText が利用者の文章だけ、出力上限が定数。
+// 内容: 依頼は 1 回で、System が設定の instruction、UserText が利用者の文章だけ、出力上限が設定の値。
 func TestScreen_Request_SeparatesInstructionFromUserText(t *testing.T) {
 	model := &llmtest.Generator{Result: llm.Result{Text: `{"verdict":"allow","english_prompt":"x"}`}}
 
-	_, err := screen(context.Background(), model, testUserPrompt)
+	_, err := screen(context.Background(), model, testConfig.Screening, testUserPrompt)
 
 	if err != nil {
 		t.Fatalf("screen() error = %v", err)
 	}
-	want := []llm.Request{{System: screeningInstruction, UserText: testUserPrompt, MaxOutputTokens: screeningMaxOutputTokens}}
+	want := []llm.Request{{System: testConfig.Screening.Instruction, UserText: testUserPrompt, MaxOutputTokens: testConfig.Screening.MaxOutputTokens}}
 	if len(model.Requests) != 1 || model.Requests[0] != want[0] {
 		t.Errorf("model.Requests = %+v, want %+v", model.Requests, want)
 	}
