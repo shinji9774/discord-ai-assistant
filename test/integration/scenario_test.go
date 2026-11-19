@@ -382,7 +382,7 @@ func TestAsk_ModelSearchesWeb_RepliesAnswerWithSources(t *testing.T) {
 }
 
 // 条件: Bedrock が Web 検索を求めた後、2000 文字に [1] を付けた回答を返す。Web 検索は 1 件のページを返す。
-// 内容: 回答と出典を合わせると Discord の本文の上限を超えるので、質問・回答・出典の全体が result.txt で返信される。
+// 内容: 回答と出典を合わせると Discord の本文の上限を超えるので、質問・回答・出典の全体が result.md で返信される。
 func TestAsk_AnswerWithSourcesOverContentLimit_AttachesResultFile(t *testing.T) {
 	resetFakes()
 	answer := strings.Repeat("あ", 2000) + "[1]"
@@ -393,7 +393,7 @@ func TestAsk_AnswerWithSourcesOverContentLimit_AttachesResultFile(t *testing.T) 
 
 	assertDiscordResponse(t, discordReply(
 		"結果が長いため、ファイルに出力しました。",
-		map[string]string{"result.txt": "> Go の最新版は？\n\n" + answer + "\n\n" + webSearchSources},
+		map[string]string{"result.md": "> Go の最新版は？\n\n" + answer + "\n\n" + webSearchSources},
 	))
 }
 
