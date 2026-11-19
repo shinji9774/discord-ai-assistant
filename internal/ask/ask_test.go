@@ -91,7 +91,7 @@ func askInvocation() command.Invocation {
 
 func assertAnswer(t *testing.T, got command.Result, err error, wantText string) {
 	t.Helper()
-	want := command.Result{Text: wantText}
+	want := command.Result{Text: wantText, Format: command.TextFormatMarkdown}
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Errorf("Execute() = %+v, %v, want %+v", got, err, want)
 	}
