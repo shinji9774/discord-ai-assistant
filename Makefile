@@ -34,53 +34,57 @@ DOCKER_GO_RUN = docker run --rm \
 	-e TESTCONTAINERS_HOST_OVERRIDE=$(TESTCONTAINERS_HOST) \
 	$(GO_IMAGE)
 
-.PHONY: vet test image image-it test-it it docker-test docker-test-it docker-cache-volume register
+.PHONY: help vet test image image-it test-it it docker-test docker-test-it docker-cache-volume register
 
-vet:
+.DEFAULT_GOAL := help
+help:
+	@grep -hE "^[a-zA-Z_-]+:.*?## .*$$" $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m: %s\n", $$1, $$2}'
+
+vet: ## Run go vet
 	go vet ./...
 
-lint:
+lint: ## Run actionlint
 	go run github.com/rhysd/actionlint/cmd/actionlint@latest .github/workflows/*.yml
 
-test:
+test: ## Run go test
 	go test -v ./...
 
-image-register:
+image-register: ## Build docker image for register
 	docker build --target register -t $(REGISTER_IMAGE) .
 
-image-it:
+image-it: ## Build docker image for integration test
 	docker build --target it -t $(IT_IMAGE) .
 
-image-runtime:
+image-runtime: ## Build docker image for runtime
 	docker build --target runtime -t $(IMAGE) .
 
-image: image-runtime image-register image-it
+image: image-runtime image-register image-it ## Build all docker images
 
 # イメージは事前に image-it か別の手段で作っておく
-test-it:
+test-it: ## Run integration test
 	IT_IMAGE=$(IT_IMAGE) go test -v -tags integration -count=1 ./test/integration/...
 
-it: image-it test-it
+it: image-it test-it ## Build docker image for integration test and run integration test
 
 # 新規ボリュームは root 所有なので、ホストの uid/gid で書けるようにする
-docker-cache-volume:
+docker-cache-volume: ## Create docker volume for go cache and set ownership to current user
 	docker run --rm --user 0 -v $(GO_CACHE_VOLUME):$(CONTAINER_CACHE_DIR) $(GO_IMAGE) \
 		chown $(shell id -u):$(shell id -g) $(CONTAINER_CACHE_DIR)
 
-docker-remove-cache-volume:
+docker-remove-cache-volume: ## Remove docker volume for go cache
 	docker volume rm $(GO_CACHE_VOLUME) >/dev/null 2>&1 || true
 
-docker-test: docker-cache-volume
+docker-test: docker-cache-volume ## Run go vet and go test in docker container
 	$(DOCKER_GO_RUN) make vet test
 
 # イメージは事前に make image-it でホスト側に作っておく
-docker-test-it: docker-cache-volume
+docker-test-it: docker-cache-volume ## Run integration test in docker container
 	$(DOCKER_GO_RUN) make test-it
 
 # 秘密情報は -e 名前 で渡し、値をコマンドラインに展開しない
 # AWS profile は aws CLI が読む AWS_PROFILE に任せる（make register AWS_PROFILE=xxx でも AWS_PROFILE=xxx make register でも効く）
 # aws が失敗したら docker run へ進まないよう、代入と export を分ける
-register:
+register: ## Register bot commands to Discord
 	DISCORD_BOT_TOKEN=$$(aws ssm get-parameter --region $(AWS_REGION) --name $(BOT_TOKEN_PARAMETER_NAME) --with-decryption --query Parameter.Value --output text) && \
 	export DISCORD_BOT_TOKEN && \
 	docker run --rm -e DISCORD_BOT_TOKEN $(REGISTER_IMAGE)
