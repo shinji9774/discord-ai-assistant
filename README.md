@@ -15,6 +15,7 @@ Discord の slash command から Amazon Translate と AWS Bedrock（Amazon Nova 
 | `/translate` | 入力した文章、または添付した `.txt` / `.html` / `.docx` ファイルを翻訳して返信する |
 | `/ask` | 質問に AI が答えて返信する |
 | `/image` | 文章から図を 1 枚生成して投稿する。引数は、文章（`prompt`、必須、最大 1000 文字）、縦横比（`aspect_ratio`）、元にする画像（`source`）、公開範囲（`visibility`）。`source` を指定すると、その画像の線と構図を元に図として描き直す |
+| `/summarize` | 実行したチャンネルの会話を要約する（期間と bot の投稿を含めるかを指定できる） |
 
 ### 構成
 
@@ -53,6 +54,7 @@ Discord の slash command から Amazon Translate と AWS Bedrock（Amazon Nova 
 - 値を変えたら、イメージを作りなおして change set を実行する。設定ファイルはバイナリに同梱されるので、配備をせずに値を変えることはできない。
 - 値に問題がある（読めない、必要な値が欠けている、範囲の外にある）と、worker は起動に失敗し、問題のあるキーがログに出る。
 - テキスト生成のモデルは `text_model_id` で指定する。CloudFormation のパラメータ `BedrockModelId` は廃止した。既存のスタックを更新するときは、このパラメータを渡さない。
+- `summarize`: /summarize の既定の期間（`default_period_hours`、24 時間）、要約に含める投稿の上限（`max_messages`、1000 件）、出力トークンの上限（`max_output_tokens`）、要約の指示文（`system_prompt`）
 
 ## 前提
 
@@ -98,6 +100,7 @@ ingress に reserved concurrency 10 を設定する。このとき、未予約�
 5. 「Public Bot」を無効（オフ）にする。無効にすると、アプリの所有者だけが bot をサーバへ追加できる。管理者以外が追加できないようにするための設定。
 6. 「Bot」の画面で bot トークンを発行し（「Reset Token」）、控える。トークンは 1 度しか表示されない。チャット、ソースコード、ログに貼らない。
 7. この bot に必要な権限（スコープ）は `applications.commands` と `bot` の 2 つ。招待 URL はこの 2 つで作る（「7. サーバへの招待と利用制限」）。
+8. 「Bot」画面の「Privileged Gateway Intents」で「Message Content Intent」を有効にする。/summarize が会話の本文を読むために要る。無効のままだと、Discord は bot に本文を空で返し、要約できない。
 
 ## 2. AWS の初期設定
 
@@ -304,7 +307,7 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
 
 ## 6. コマンドの登録
 
-`/translate`、`/ask`、`/image`、`/help` を Discord に登録する。ローカルでビルドしたイメージの中にある `/register` を使う。
+`/translate`、`/ask`、`/image`、`/summarize`、`/help` を Discord に登録する。ローカルでビルドしたイメージの中にある `/register` を使う。
 
 1. デプロイ済みのリリースタグを checkout する。`vX.Y.Z` は「4. リリース」で push したタグ。登録されるのはビルドしたソースのコマンド定義なので、デプロイ済みと同じタグでビルドしないと、Discord の画面の選択肢と実際の動作がずれる。
 
@@ -339,11 +342,13 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
 1. 次の URL の `<Application ID>` を置き換えて、ブラウザで開く。スコープは `bot` と `applications.commands` の 2 つ。
 
    ```
-   https://discord.com/oauth2/authorize?client_id=<Application ID>&scope=bot%20applications.commands
+   https://discord.com/oauth2/authorize?client_id=<Application ID>&scope=bot%20applications.commands&permissions=66560
    ```
 
 2. 招待先のサーバを選んで認可する。「Public Bot」が無効なので、アプリの所有者だけが追加できる。サーバの「サーバーを管理」権限が必要。
-3. この bot は slash command への応答だけをするので、メッセージの読み取りなどの追加の権限は要らない。
+3. bot には、/summarize のために「チャンネルを見る」と「メッセージ履歴を読む」の 2 つの権限を付ける（上の URL の `permissions=66560`）。ほかの権限は要らない。招待済みの bot には、サーバの設定でこの 2 つをロールに付ける。権限が無いチャンネルで /summarize を実行すると、bot は権限が無いことを案内する。
+
+/summarize は、チャンネルの会話の本文と投稿者の表示名を Amazon Bedrock の文章生成モデルに送る。会話の本文と要約は、成功時も失敗時もログに残さない。実行者がそのチャンネルのメッセージ履歴を読めない場合は要約しない。
 
 ### 7-2. コマンドを使える人とチャンネルを制限する
 

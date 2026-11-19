@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-lambda-go/events"
+	"github.com/disgoorg/disgo/discord"
 
 	"discord-ai-assistant/internal/command"
 	"discord-ai-assistant/internal/help"
@@ -30,6 +31,10 @@ const (
 
 	privateCommandBody = `{"type":2,"application_id":"app1","token":"tok1","channel_id":"ch1","data":{"name":"image","options":[{"name":"prompt","type":3,"value":"cat"},{"name":"visibility","type":3,"value":"private"}]}}`
 	publicCommandBody  = `{"type":2,"application_id":"app1","token":"tok1","channel_id":"ch1","data":{"name":"image","options":[{"name":"prompt","type":3,"value":"cat"},{"name":"visibility","type":3,"value":"public"}]}}`
+
+	permissionsCommandBody = `{"type":2,"application_id":"app1","token":"tok1","channel_id":"ch1",` +
+		`"app_permissions":"66560","member":{"permissions":"65536"},` +
+		`"data":{"name":"summarize","options":[{"name":"since","type":3,"value":"2026-11-18"}]}}`
 
 	helpCommandBody = `{"type":2,"application_id":"app1","token":"tok1","channel_id":"ch1","data":{"name":"help"}}`
 )
@@ -319,4 +324,27 @@ func TestHandle_PrivateVisibilityWorkerInvokeFails_ReturnsEphemeralFailureMessag
 
 	want := jsonResponse(http.StatusOK, `{"type":4,"data":{"content":"処理に失敗しました。時間をおいてもう一度実行してください。","flags":64}}`)
 	assertResponse(t, got, want)
+}
+
+// 条件: bot の権限（チャンネルを見る + メッセージ履歴を読む）と、実行者の権限（メッセージ履歴を読む）を持つ interaction。
+// 内容: 両方の権限が Invocation に入って worker に渡る（4.2、4.6）。
+func TestHandle_CommandWithPermissions_PassesPermissionsToWorker(t *testing.T) {
+	invoker := &recordingInvoker{}
+	handler, privateKey := newHandler(t, invoker)
+	req := signedRequest(t, privateKey, permissionsCommandBody)
+
+	_, _ = handler.Handle(context.Background(), req)
+
+	wantInvocations := []command.Invocation{{
+		ApplicationID:     "app1",
+		InteractionToken:  "tok1",
+		ChannelID:         "ch1",
+		CommandName:       "summarize",
+		Options:           map[string]string{"since": "2026-11-18"},
+		AppPermissions:    discord.PermissionViewChannel | discord.PermissionReadMessageHistory,
+		MemberPermissions: discord.PermissionReadMessageHistory,
+	}}
+	if recorded := invoker.recorded(); !reflect.DeepEqual(recorded, wantInvocations) {
+		t.Errorf("invocations = %+v, want %+v", recorded, wantInvocations)
+	}
 }

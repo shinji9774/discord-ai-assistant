@@ -20,6 +20,9 @@ const (
 	maxLengthPhraseFormat = "最大 %d 文字"
 	maxKBPhraseFormat     = "%d KB まで"
 	maxMBPhraseFormat     = "%d MB まで"
+
+	summarizeDefaultPeriodPhraseFormat = "直近 %d 時間"
+	summarizeMaxMessagesPhraseFormat   = "新しい方から %d 件まで"
 )
 
 // phrasesMissingFrom は、phrases のうち、text に含まれないものを返す。
@@ -34,7 +37,7 @@ func phrasesMissingFrom(text string, phrases []string) []string {
 }
 
 // 条件: 同梱の設定ファイルを読む。
-// 内容: 使い方に書かれた上限（/ask・/translate・/image の文字数、/translate のファイルの大きさ、/image の元の画像の大きさ）が、設定の値と一致する（7.5）。
+// 内容: 使い方に書かれた上限（/ask・/translate・/image の文字数、/translate のファイルの大きさ、/image の元の画像の大きさ、/summarize の既定の期間と件数）が、設定の値と一致する（7.5）。
 func TestUsage_Limits_MatchConfig(t *testing.T) {
 	cfg := configtest.Load(t)
 	limits := []string{
@@ -43,6 +46,8 @@ func TestUsage_Limits_MatchConfig(t *testing.T) {
 		fmt.Sprintf(maxLengthPhraseFormat, cfg.Image.MaxPromptLength),
 		fmt.Sprintf(maxKBPhraseFormat, cfg.Translate.MaxFileSizeBytes/bytesPerKB),
 		fmt.Sprintf(maxMBPhraseFormat, cfg.Image.Source.MaxBytes/bytesPerMB),
+		fmt.Sprintf(summarizeDefaultPeriodPhraseFormat, cfg.Summarize.DefaultPeriodHours),
+		fmt.Sprintf(summarizeMaxMessagesPhraseFormat, cfg.Summarize.MaxMessages),
 	}
 
 	missing := phrasesMissingFrom(help.Usage, limits)

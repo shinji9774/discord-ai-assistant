@@ -13,12 +13,14 @@ const (
 
 // Invocation は ingress が worker へ渡す、コマンド 1 回分の実行依頼。
 type Invocation struct {
-	ApplicationID    string                `json:"application_id"`
-	InteractionToken string                `json:"interaction_token"`
-	ChannelID        string                `json:"channel_id"` // コマンドが実行されたチャンネル
-	CommandName      string                `json:"command_name"`
-	Options          map[string]string     `json:"options"`
-	Attachments      map[string]Attachment `json:"attachments,omitempty"` // key は添付ファイル型のオプション名
+	ApplicationID     string                `json:"application_id"`
+	InteractionToken  string                `json:"interaction_token"`
+	ChannelID         string                `json:"channel_id"` // コマンドが実行されたチャンネル
+	CommandName       string                `json:"command_name"`
+	Options           map[string]string     `json:"options"`
+	Attachments       map[string]Attachment `json:"attachments,omitempty"`        // key は添付ファイル型のオプション名
+	AppPermissions    discord.Permissions   `json:"app_permissions,omitempty"`    // 実行元チャンネルでの bot の権限
+	MemberPermissions discord.Permissions   `json:"member_permissions,omitempty"` // 実行元チャンネルでの実行者の権限
 }
 
 // Attachment は利用者が添付したファイルの情報。中身は URL から取得する。
@@ -34,6 +36,8 @@ type Result struct {
 	Text   string
 	Format TextFormat
 	Files  []File
+
+	Confidential bool // 真なら、worker は失敗ログに Text を出さない
 }
 
 // TextFormat は Result.Text の記法。長文を添付に回すときのファイル形式を決める。

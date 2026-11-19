@@ -12,6 +12,7 @@ import (
 	"discord-ai-assistant/internal/ask"
 	"discord-ai-assistant/internal/config/check"
 	"discord-ai-assistant/internal/imagegen"
+	"discord-ai-assistant/internal/summarize"
 	"discord-ai-assistant/internal/translate"
 )
 
@@ -30,6 +31,7 @@ type Config struct {
 	Ask                 ask.Config       `yaml:"ask"`
 	Translate           translate.Config `yaml:"translate"`
 	Image               imagegen.Config  `yaml:"image"`
+	Summarize           summarize.Config `yaml:"summarize"`
 }
 
 // Load は、同梱した config.yaml を読んで検証する。
@@ -59,5 +61,6 @@ func (c Config) Validate() error {
 		check.Under("ask", c.Ask.Validate()),
 		check.Under("translate", c.Translate.Validate()),
 		check.Under("image", c.Image.Validate()),
+		check.Under("summarize", c.Summarize.Validate()),
 	)
 }

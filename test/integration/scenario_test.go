@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
+	"github.com/disgoorg/snowflake/v2"
 
 	"discord-ai-assistant/test/bedrockfake"
 	"discord-ai-assistant/test/discordfake"
@@ -601,5 +602,131 @@ func TestWorker_AfterCommand_DoesNotLogInteractionToken(t *testing.T) {
 
 	if strings.Contains(got, testInteraction) {
 		t.Errorf("worker のログに interaction token が含まれている")
+	}
+}
+
+const (
+	summarizeChannelID = "1300000000000000001"
+	// botCanReadHistory は VIEW_CHANNEL（1<<10）と READ_MESSAGE_HISTORY（1<<16）の和。
+	botCanReadHistory = "66560"
+	// memberCanReadHistory は READ_MESSAGE_HISTORY（1<<16）。
+	memberCanReadHistory = "65536"
+)
+
+// summarizeBody は署名前の /summarize の interaction の本文を作る。チャンネルは snowflake の summarizeChannelID にし、bot と実行者の権限を付ける。
+func summarizeBody(t *testing.T, options []map[string]any, appPermissions, memberPermissions string) string {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal([]byte(interactionBody(t, map[string]any{"name": "summarize", "options": options})), &body); err != nil {
+		t.Fatal(err)
+	}
+	body["channel_id"] = summarizeChannelID
+	body["app_permissions"] = appPermissions
+	body["member"] = map[string]any{"permissions": memberPermissions}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+}
+
+// summarizePeriodOptions は 2026-11-18 09:00 〜 18:00（日本時間）を指定するオプション。
+func summarizePeriodOptions() []map[string]any {
+	return []map[string]any{
+		{"name": "since", "type": 3, "value": "2026-11-18 09:00"},
+		{"name": "until", "type": 3, "value": "2026-11-18 18:00"},
+	}
+}
+
+// historyPost は、2026-11-18 の日本時間 hour:minute に author が投稿した会話。
+func historyPost(hour, minute int, author discordfake.HistoryUser, content string) discordfake.HistoryMessage {
+	sentAt := time.Date(2026, 11, 18, hour, minute, 0, 0, time.FixedZone("JST", 9*60*60)).UTC()
+	return discordfake.HistoryMessage{ID: snowflake.New(sentAt).String(), Timestamp: sentAt, Author: author, Content: content}
+}
+
+var (
+	satoUser   = discordfake.HistoryUser{ID: "2001", Username: "sato", GlobalName: "佐藤"}
+	suzukiUser = discordfake.HistoryUser{ID: "2002", Username: "suzuki", GlobalName: "鈴木"}
+	botUser    = discordfake.HistoryUser{ID: "9001", Username: "helper-bot", Bot: true}
+)
+
+// 条件: 2026-11-18 09:00〜18:00 に利用者の投稿 2 件と bot の投稿 1 件、期間の後に 1 件があるチャンネルで、/summarize を期間つきで実行する。
+// 内容: 期間中の利用者の投稿だけがモデルに渡り、見出しつきの要約が返信される。
+func TestSummarize_ValidCommand_RepliesSummaryOfChannel(t *testing.T) {
+	resetFakes()
+	discord.AddHistory(summarizeChannelID,
+		historyPost(10, 0, satoUser, "会議は 10 時から"),
+		historyPost(10, 5, botUser, "定期通知"),
+		historyPost(11, 30, suzukiUser, "了解です"),
+		historyPost(19, 0, satoUser, "期間の後"),
+	)
+	bedrock.RespondWith("## 会議\n- 佐藤: 10 時から", "end_turn")
+	body := summarizeBody(t, summarizePeriodOptions(), botCanReadHistory, memberCanReadHistory)
+
+	invokeIngress(t, body, ingressPrivate)
+
+	assertDiscordResponse(t, discordReply(
+		"**対象期間**: 2026-11-18 09:00 〜 2026-11-18 18:00（日本時間） / **メッセージ**: 2 件\n\n## 会議\n- 佐藤: 10 時から",
+		map[string]string{}))
+	var transcripts []string
+	for _, r := range bedrock.Requests() {
+		transcripts = append(transcripts, r.UserText)
+	}
+	if want := []string{"[2026-11-18 10:00] 佐藤: 会議は 10 時から\n[2026-11-18 11:30] 鈴木: 了解です"}; !reflect.DeepEqual(transcripts, want) {
+		t.Errorf("transcripts = %q, want %q", transcripts, want)
+	}
+}
+
+// 条件: bot に「メッセージ履歴を読む」権限が無いチャンネルで /summarize を実行する（app_permissions は VIEW_CHANNEL だけ）。
+// 内容: bot の権限不足の案内が返信され、モデルは呼ばれない。
+func TestSummarize_BotLacksPermission_RepliesGuidance(t *testing.T) {
+	resetFakes()
+	discord.AddHistory(summarizeChannelID, historyPost(10, 0, satoUser, "会議は 10 時から"))
+	body := summarizeBody(t, summarizePeriodOptions(), "1024", memberCanReadHistory)
+
+	invokeIngress(t, body, ingressPrivate)
+
+	assertDiscordResponse(t, discordReply("bot にこのチャンネルの会話履歴を読む権限がないため、要約できません。サーバの管理者に相談してください。", map[string]string{}))
+	if got := bedrock.Requests(); len(got) != 0 {
+		t.Errorf("bedrock requests = %+v, want none", got)
+	}
+}
+
+// 条件: 実行者に「メッセージ履歴を読む」権限が無い（member.permissions が 0）。
+// 内容: 実行者の権限不足の案内が返信され、モデルは呼ばれない。
+func TestSummarize_MemberLacksPermission_RepliesGuidance(t *testing.T) {
+	resetFakes()
+	discord.AddHistory(summarizeChannelID, historyPost(10, 0, satoUser, "会議は 10 時から"))
+	body := summarizeBody(t, summarizePeriodOptions(), botCanReadHistory, "0")
+
+	invokeIngress(t, body, ingressPrivate)
+
+	assertDiscordResponse(t, discordReply("このチャンネルの会話履歴を読む権限がないため、要約できません。", map[string]string{}))
+	if got := bedrock.Requests(); len(got) != 0 {
+		t.Errorf("bedrock requests = %+v, want none", got)
+	}
+}
+
+// 条件: Bedrock が 400 で失敗する。
+// 内容: 失敗の定型文が返信され、worker のログに会話の本文が出ない。
+func TestSummarize_ModelFails_RepliesFailureWithoutLoggingConversation(t *testing.T) {
+	const (
+		conversationText = "ログ漏えい検査用の本文"
+		commandFailedLog = "command failed" // worker の notifyFailure が出すログのメッセージ
+	)
+	resetFakes()
+	discord.AddHistory(summarizeChannelID, historyPost(10, 0, satoUser, conversationText))
+	bedrock.FailWith(http.StatusBadRequest)
+	body := summarizeBody(t, summarizePeriodOptions(), botCanReadHistory, memberCanReadHistory)
+
+	invokeIngress(t, body, ingressPrivate)
+
+	assertDiscordResponse(t, discordReply("処理に失敗しました。時間をおいてもう一度実行してください。", map[string]string{}))
+	logs := workerLogs(t)
+	type logFacts struct{ ContainsConversation, ContainsFailureLog bool }
+	want := logFacts{ContainsConversation: false, ContainsFailureLog: true}
+	got := logFacts{ContainsConversation: strings.Contains(logs, conversationText), ContainsFailureLog: strings.Contains(logs, commandFailedLog)}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("worker logs facts = %+v, want %+v:\n%s", got, want, logs)
 	}
 }

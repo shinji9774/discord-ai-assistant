@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/disgoorg/disgo/discord"
+
 	"discord-ai-assistant/internal/catalog"
 	"discord-ai-assistant/internal/command"
 	"discord-ai-assistant/internal/config/configtest"
@@ -186,6 +188,41 @@ func TestHandle_ReplyFails_LogsInputAndAnswerThenRepliesFailureMessage(t *testin
 			"error":   "send failed",
 			"input":   map[string]any{"question": "Go とは？"},
 			"answer":  answerText,
+		},
+	})
+}
+
+const confidentialAnswer = "佐藤: 会議は 10 時から"
+
+// confidentialCommand は、機密の印つきの結果を返すテスト用のコマンド。
+type confidentialCommand struct{}
+
+func (confidentialCommand) Definition() discord.SlashCommandCreate {
+	return discord.SlashCommandCreate{Name: "confidential", Description: "test"}
+}
+
+func (confidentialCommand) Execute(context.Context, command.Invocation) (command.Result, error) {
+	return command.Result{Text: confidentialAnswer, Confidential: true}, nil
+}
+
+// 条件: 機密の印つきの結果を返すコマンドで、最初の返信が失敗する。
+// 内容: 失敗ログにコマンド名・エラー・入力は出るが、回答（answer）は出ない（NFR: 本文をログに残さない）。
+func TestHandle_ReplyFailsForConfidentialResult_LogsWithoutAnswer(t *testing.T) {
+	responder := &replytest.Responder{Errs: []error{errSend}}
+	logs := &bytes.Buffer{}
+	h := worker.NewHandler(command.NewRegistry(confidentialCommand{}), responder, slog.New(slog.NewJSONHandler(logs, nil)), replyReserve)
+	inv := command.Invocation{ApplicationID: "app1", InteractionToken: "tok1", CommandName: "confidential", Options: map[string]string{"since": "2026-11-18"}}
+
+	_ = h.Handle(context.Background(), inv)
+
+	assertReplyTexts(t, responder, []string{confidentialAnswer, failureText})
+	assertLogRecords(t, logs, []map[string]any{
+		{
+			"level":   "ERROR",
+			"msg":     "command failed",
+			"command": "confidential",
+			"error":   "send failed",
+			"input":   map[string]any{"since": "2026-11-18"},
 		},
 	})
 }

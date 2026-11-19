@@ -23,6 +23,7 @@ import (
 	"discord-ai-assistant/internal/imagegen"
 	"discord-ai-assistant/internal/llm"
 	"discord-ai-assistant/internal/reply"
+	"discord-ai-assistant/internal/summarize"
 	"discord-ai-assistant/internal/translate"
 	"discord-ai-assistant/internal/websearch"
 	"discord-ai-assistant/internal/worker"
@@ -74,8 +75,10 @@ func run(logger *slog.Logger) error {
 	imageGenerator := imagegen.NewStabilityGenerator(imageClient, cfg.Image)
 	translator := translate.NewAmazonTranslator(awstranslate.NewFromConfig(awsConfig))
 	fetcher := translate.NewHTTPAttachmentFetcher(http.DefaultClient)
-	registry := catalog.New(catalog.Dependencies{Generator: generator, ToolGenerator: generator, Searcher: searcher, Logger: logger, ImageGenerator: imageGenerator, Translator: translator, Fetcher: fetcher, BotToken: token}, cfg)
-	responder := reply.NewDiscordResponder(os.Getenv(discordapi.EnvBaseURL))
+	discordBaseURL := os.Getenv(discordapi.EnvBaseURL)
+	history := summarize.NewDiscordHistoryReader(token, discordBaseURL)
+	registry := catalog.New(catalog.Dependencies{Generator: generator, ToolGenerator: generator, Searcher: searcher, Logger: logger, ImageGenerator: imageGenerator, Translator: translator, Fetcher: fetcher, History: history, BotToken: token}, cfg)
+	responder := reply.NewDiscordResponder(discordBaseURL)
 	replyReserve := time.Duration(cfg.ReplyReserveSeconds) * time.Second
 	lambda.Start(worker.NewHandler(registry, responder, logger, replyReserve).Handle)
 	return nil

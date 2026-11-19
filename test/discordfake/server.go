@@ -2,11 +2,15 @@
 package discordfake
 
 import (
+	"cmp"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +28,11 @@ const (
 	fakeVersion      = "1"
 	rejectedBody     = `{"message":"rejected by fake"}`
 	authorizationKey = "Authorization"
+
+	channelsSegment           = "channels"
+	historyRejectedBodyFormat = `{"message":"rejected by fake","code":%d}`
+	beforeQuery               = "before"
+	limitQuery                = "limit"
 )
 
 // FakeApplicationID は GET /applications/@me が返す application id。disgo は snowflake を要求するため数字だけにする。
@@ -44,11 +53,37 @@ type Registration struct {
 	CommandNames  []string
 }
 
+// HistoryMessage はチャンネルの会話履歴（GET .../channels/{id}/messages）の 1 件。Discord API の Message のうち、bot が読む項目だけを持つ。
+type HistoryMessage struct {
+	ID        string        `json:"id"`
+	Type      int           `json:"type"`
+	Content   string        `json:"content"`
+	Timestamp time.Time     `json:"timestamp"`
+	Author    HistoryUser   `json:"author"`
+	Mentions  []HistoryUser `json:"mentions"`
+	WebhookID string        `json:"webhook_id,omitempty"`
+	Flags     int           `json:"flags"`
+}
+
+// HistoryUser は投稿者とメンションされた利用者。
+type HistoryUser struct {
+	ID         string `json:"id"`
+	Username   string `json:"username"`
+	GlobalName string `json:"global_name,omitempty"`
+	Bot        bool   `json:"bot,omitempty"`
+}
+
+// historyRejection は履歴の取得を拒むときの status と Discord のエラーコード。
+type historyRejection struct {
+	status int
+	code   int
+}
+
 type messagePayload struct {
 	Content string `json:"content"`
 }
 
-// Server は Discord REST のうち応答の更新とコマンド登録、application 情報の取得、および添付ファイルのダウンロード（GET）に応える http.Handler。
+// Server は Discord REST のうち応答の更新とコマンド登録、application 情報の取得、チャンネルの会話履歴の取得、および添付ファイルのダウンロード（GET）に応える http.Handler。
 type Server struct {
 	mu                     sync.Mutex
 	failStatus             int
@@ -57,7 +92,9 @@ type Server struct {
 	nextUnread             int           // WaitForResponse がまだ渡していない最初の応答の位置
 	responseAdded          chan struct{} // 応答が届くたびに閉じて作り直す
 	registrations          []Registration
-	attachments            map[string]string // URL のパス → 中身
+	attachments            map[string]string           // URL のパス → 中身
+	history                map[string][]HistoryMessage // チャンネル ID → 投稿
+	historyRejections      map[string]historyRejection // チャンネル ID → 拒み方
 }
 
 func New() *Server {
@@ -75,6 +112,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveRegistration(w, r, segments)
 	case r.Method == http.MethodGet && isCurrentApplicationPath(segments):
 		s.serveCurrentApplication(w, r)
+	case r.Method == http.MethodGet && isHistoryPath(segments):
+		s.serveHistory(w, r, segments[len(segments)-2])
 	case r.Method == http.MethodGet:
 		s.serveAttachment(w, r)
 	default:
@@ -98,6 +137,53 @@ func isRegistrationPath(segments []string) bool {
 func isCurrentApplicationPath(segments []string) bool {
 	n := len(segments)
 	return n >= 2 && segments[n-2] == applicationsSeg && segments[n-1] == currentAppSeg
+}
+
+// パスの末尾 .../channels/{channel}/messages で判定する。
+func isHistoryPath(segments []string) bool {
+	n := len(segments)
+	return n >= 3 && segments[n-3] == channelsSegment && segments[n-1] == messagesSegment
+}
+
+// serveHistory は before より前の投稿を新しい順に最大 limit 件返す。拒む設定のチャンネルは Discord と同じ形のエラーを返す。
+func (s *Server) serveHistory(w http.ResponseWriter, r *http.Request, channelID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rejection, ok := s.historyRejections[channelID]; ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(rejection.status)
+		fmt.Fprintf(w, historyRejectedBodyFormat, rejection.code)
+		return
+	}
+	before, err := strconv.ParseUint(r.URL.Query().Get(beforeQuery), 10, 64)
+	if err != nil {
+		http.Error(w, "before must be a snowflake", http.StatusBadRequest)
+		return
+	}
+	limit, err := strconv.Atoi(r.URL.Query().Get(limitQuery))
+	if err != nil || limit <= 0 {
+		http.Error(w, "limit must be a positive number", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, olderMessages(s.history[channelID], before, limit))
+}
+
+// olderMessages は ID が before より小さい投稿を新しい順に最大 limit 件返す。
+func olderMessages(messages []HistoryMessage, before uint64, limit int) []HistoryMessage {
+	older := []HistoryMessage{}
+	for _, m := range messages {
+		if messageID(m) < before {
+			older = append(older, m)
+		}
+	}
+	slices.SortFunc(older, func(a, b HistoryMessage) int { return cmp.Compare(messageID(b), messageID(a)) })
+	return older[:min(len(older), limit)]
+}
+
+// messageID は投稿の ID を数として返す。仕込む側が数字の ID を渡す前提。
+func messageID(m HistoryMessage) uint64 {
+	id, _ := strconv.ParseUint(m.ID, 10, 64)
+	return id
 }
 
 func (s *Server) serveResponseUpdate(w http.ResponseWriter, r *http.Request, segments []string) {
@@ -286,6 +372,20 @@ func (s *Server) AddAttachment(path, content string) {
 	s.attachments[path] = content
 }
 
+// AddHistory は channelID のチャンネルに投稿を足す。
+func (s *Server) AddHistory(channelID string, messages ...HistoryMessage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.history[channelID] = append(s.history[channelID], messages...)
+}
+
+// RejectHistory は channelID のチャンネルの履歴の取得を、status と Discord のエラーコード code で拒ませる。
+func (s *Server) RejectHistory(channelID string, status, code int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.historyRejections[channelID] = historyRejection{status: status, code: code}
+}
+
 // FailWith は以後の応答を指定の status の失敗にする。失敗した依頼は記録しない。
 func (s *Server) FailWith(status int) {
 	s.mu.Lock()
@@ -305,6 +405,8 @@ func (s *Server) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failStatus, s.registrationFailStatus, s.responses, s.nextUnread, s.registrations, s.attachments = 0, 0, nil, 0, nil, map[string]string{}
+	s.history = map[string][]HistoryMessage{}
+	s.historyRejections = map[string]historyRejection{}
 	if s.responseAdded == nil {
 		s.responseAdded = make(chan struct{})
 	}

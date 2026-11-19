@@ -38,11 +38,15 @@ const (
 
 // interaction は Discord の interaction のうち、振り分けに使う最小の部分。
 type interaction struct {
-	Type          int    `json:"type"`
-	ApplicationID string `json:"application_id"`
-	Token         string `json:"token"`
-	ChannelID     string `json:"channel_id"`
-	Data          struct {
+	Type           int                 `json:"type"`
+	ApplicationID  string              `json:"application_id"`
+	Token          string              `json:"token"`
+	ChannelID      string              `json:"channel_id"`
+	AppPermissions discord.Permissions `json:"app_permissions"` // 実行元チャンネルでの bot の権限
+	Member         struct {
+		Permissions discord.Permissions `json:"permissions"` // 実行元チャンネルでの実行者の権限
+	} `json:"member"`
+	Data struct {
 		Name    string `json:"name"`
 		Options []struct {
 			Name  string                               `json:"name"`
@@ -131,12 +135,14 @@ func toInvocation(in interaction) command.Invocation {
 		attachments[o.Name] = in.Data.Resolved.Attachments[optionValue(o.Value)]
 	}
 	return command.Invocation{
-		ApplicationID:    in.ApplicationID,
-		InteractionToken: in.Token,
-		ChannelID:        in.ChannelID,
-		CommandName:      in.Data.Name,
-		Options:          options,
-		Attachments:      attachments,
+		ApplicationID:     in.ApplicationID,
+		InteractionToken:  in.Token,
+		ChannelID:         in.ChannelID,
+		CommandName:       in.Data.Name,
+		Options:           options,
+		Attachments:       attachments,
+		AppPermissions:    in.AppPermissions,
+		MemberPermissions: in.Member.Permissions,
 	}
 }
 

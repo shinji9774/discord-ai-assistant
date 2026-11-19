@@ -32,7 +32,7 @@ func TestRun_Success_ReplacesGlobalCommandsWithAllDefinitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	want := []discordfake.Registration{{ApplicationID: discordfake.FakeApplicationID, Authorization: "Bot token1", CommandNames: []string{"translate", "ask", "image", "help"}}}
+	want := []discordfake.Registration{{ApplicationID: discordfake.FakeApplicationID, Authorization: "Bot token1", CommandNames: []string{"translate", "ask", "image", "summarize", "help"}}}
 	if got := fake.Registrations(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Registrations() = %+v, want %+v", got, want)
 	}
@@ -49,8 +49,8 @@ func TestRun_Success_PrintsRegisteredCommandNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if got := stdout.String(); got != "translate\nask\nimage\nhelp\n" {
-		t.Errorf("stdout = %q, want %q", got, "translate\nask\nimage\nhelp\n")
+	if got := stdout.String(); got != "translate\nask\nimage\nsummarize\nhelp\n" {
+		t.Errorf("stdout = %q, want %q", got, "translate\nask\nimage\nsummarize\nhelp\n")
 	}
 }
 

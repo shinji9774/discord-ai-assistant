@@ -74,13 +74,17 @@ func (h *Handler) executeAndReply(ctx context.Context, cmd command.Command, inv 
 }
 
 // notifyFailure は失敗をログに残し、元の ctx で失敗メッセージを返信する。
+// 機密の結果は、本文をログに出さない。
 func (h *Handler) notifyFailure(ctx context.Context, inv command.Invocation, result command.Result, cause error) {
-	h.logger.Error(msgCommandFailed,
+	attrs := []any{
 		logKeyCommand, inv.CommandName,
 		logKeyError, cause.Error(),
 		logKeyInput, inv.Options,
-		logKeyAnswer, result.Text,
-	)
+	}
+	if !result.Confidential {
+		attrs = append(attrs, logKeyAnswer, result.Text)
+	}
+	h.logger.Error(msgCommandFailed, attrs...)
 	if err := h.responder.Respond(ctx, inv, command.Result{Text: command.FailureMessage}); err != nil {
 		h.logger.Error(msgFailureNotifyError, logKeyCommand, inv.CommandName, logKeyError, err.Error())
 	}
