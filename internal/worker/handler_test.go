@@ -316,6 +316,43 @@ func TestHandle_ReplyFailsForGuidedResult_LogsFailureWithReason(t *testing.T) {
 	})
 }
 
+// secretInputLink は、ログに出てはならない入力（鍵つきの録音リンク）。
+const secretInputLink = "https://craig.horse/rec/AbCdEf1234?key=secret"
+
+// secretInputCommand は、入力に秘密を含み（SecretInput）、実行に失敗するテスト用のコマンド。
+type secretInputCommand struct{}
+
+func (secretInputCommand) Definition() discord.SlashCommandCreate {
+	return discord.SlashCommandCreate{Name: "secret", Description: "test"}
+}
+
+func (secretInputCommand) Execute(context.Context, command.Invocation) (command.Result, error) {
+	return command.Result{}, errors.New("boom")
+}
+
+func (secretInputCommand) HasSecretInput() {}
+
+// 条件: 入力に秘密を含むコマンドの実行が失敗する（入力は鍵つきの録音リンク）。
+// 内容: 失敗ログにコマンド名・エラー・回答は出るが、入力（input）は出ない（NFR: 録音リンクをログに出さない）。
+func TestHandle_SecretInputCommandFails_LogsFailureWithoutInput(t *testing.T) {
+	responder := &replytest.Responder{}
+	logs := &bytes.Buffer{}
+	h := worker.NewHandler(command.NewRegistry(secretInputCommand{}), responder, slog.New(slog.NewJSONHandler(logs, nil)), replyReserve)
+	inv := command.Invocation{ApplicationID: "app1", InteractionToken: "tok1", CommandName: "secret", Options: map[string]string{"link": secretInputLink}}
+
+	_ = h.Handle(context.Background(), inv)
+
+	assertLogRecords(t, logs, []map[string]any{
+		{
+			"level":   "ERROR",
+			"msg":     "command failed",
+			"command": "secret",
+			"error":   "boom",
+			"answer":  "",
+		},
+	})
+}
+
 // 条件: deadline が replyReserve + 50ms 後にあり、生成が ctx の終了まで止まる。
 // 内容: 失敗通知の時間を残して実行を打ち切り、失敗メッセージを返信して DeadlineExceeded を返す。
 func TestHandle_DeadlineNear_StopsExecutionAndRepliesFailureMessage(t *testing.T) {

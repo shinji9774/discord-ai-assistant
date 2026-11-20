@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: discord-ai-assistant のアプリ本体（ingress と worker の Lambda 関数、Function URL）
+Description: discord-ai-assistant のアプリ本体（ingress、worker、voicereporter の Lambda 関数、Function URL、録音の一時的な置き場）
 
 Parameters:
   ImageUri:
@@ -26,6 +26,28 @@ Resources:
     Properties:
       LogGroupName: !Sub /aws/lambda/${AWS::StackName}-worker
       RetentionInDays: 30
+
+  VoiceReporterLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-voicereporter
+      RetentionInDays: 30
+
+  # /summarize-voice の音声と途中結果の一時的な置き場。公開しない。バケットポリシーとバージョニングは使わない
+  VoiceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      # 投稿の直後に bot が消す。消せなかったものも、作成から 1 日で消す（2 日以内に消す）
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireVoiceData
+            Status: Enabled
+            ExpirationInDays: 1
 
   IngressRole:
     Type: AWS::IAM::Role
@@ -96,6 +118,74 @@ Resources:
                 Effect: Allow
                 Action: ssm:GetParameter
                 Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${BotTokenParameterName}
+              # 音声とマニフェストを置き、失敗時に消す。Transcribe は worker の権限で音声を読み、結果を書く
+              - Sid: StoreVoiceData
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                Resource: !Sub ${VoiceBucket.Arn}/*
+              # ないオブジェクトを 403 ではなく 404 として受け取るために要る
+              - Sid: ListVoiceData
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt VoiceBucket.Arn
+              # StartTranscriptionJob はジョブの ARN で絞れないため、結果の置き場のバケットで絞る
+              - Sid: StartTranscription
+                Effect: Allow
+                Action: transcribe:StartTranscriptionJob
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    transcribe:OutputBucketName: !Ref VoiceBucket
+
+  VoiceReporterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service: lambda.amazonaws.com
+      Policies:
+        - PolicyName: voicereporter
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: WriteOwnLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt VoiceReporterLogGroup.Arn
+              # マニフェストと文字起こしを読み、report.claim を作り、依頼のデータを消す
+              - Sid: StoreVoiceData
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                Resource: !Sub ${VoiceBucket.Arn}/*
+              # ないマニフェストを 403 ではなく 404 として受け取るために要る
+              - Sid: ListVoiceData
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt VoiceBucket.Arn
+              - Sid: ReadTranscriptionJob
+                Effect: Allow
+                Action: transcribe:GetTranscriptionJob
+                Resource: !Sub arn:${AWS::Partition}:transcribe:${AWS::Region}:${AWS::AccountId}:transcription-job/summarize-voice-*
+              - Sid: InvokeBedrockModel
+                Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource: "*"
+              - Sid: ReadBotToken
+                Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${BotTokenParameterName}
 
   IngressFunction:
     Type: AWS::Lambda::Function
@@ -129,11 +219,16 @@ Resources:
         EntryPoint: ["/worker"]
       Architectures: [x86_64]
       Timeout: 600
-      MemorySize: 256
+      # CPU とネットワークの帯域はメモリの量に比例する。録音の取得と転送を速くするために増やす（値は実機の計測で見直す）
+      MemorySize: 1024
+      # 録音の zip を /tmp に保存してからトラックを取り出す
+      EphemeralStorage:
+        Size: 10240
       Role: !GetAtt WorkerRole.Arn
       Environment:
         Variables:
           BOT_TOKEN_PARAMETER_NAME: !Ref BotTokenParameterName
+          VOICE_BUCKET_NAME: !Ref VoiceBucket
 
   # 非同期呼び出しの再試行を止める（同じコマンドを二重に実行しない）
   WorkerEventInvokeConfig:
@@ -142,6 +237,49 @@ Resources:
       FunctionName: !Ref WorkerFunction
       Qualifier: $LATEST
       MaximumRetryAttempts: 0
+
+  VoiceReporterFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: VoiceReporterLogGroup
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-voicereporter
+      PackageType: Image
+      Code:
+        ImageUri: !Ref ImageUri
+      ImageConfig:
+        EntryPoint: ["/voicereporter"]
+      Architectures: [x86_64]
+      Timeout: 900
+      MemorySize: 512
+      Role: !GetAtt VoiceReporterRole.Arn
+      Environment:
+        Variables:
+          BOT_TOKEN_PARAMETER_NAME: !Ref BotTokenParameterName
+          VOICE_BUCKET_NAME: !Ref VoiceBucket
+
+  # /summarize-voice の文字起こしが終わったら voicereporter を呼ぶ。接頭辞は voicesummary.JobNamePrefix と同じにする
+  VoiceTranscriptionFinishedRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: /summarize-voice の文字起こしの完了と失敗を voicereporter に伝える
+      State: ENABLED
+      EventPattern:
+        source: ["aws.transcribe"]
+        detail-type: ["Transcribe Job State Change"]
+        detail:
+          TranscriptionJobStatus: ["COMPLETED", "FAILED"]
+          TranscriptionJobName: [{"prefix": "summarize-voice-"}]
+      Targets:
+        - Id: voicereporter
+          Arn: !GetAtt VoiceReporterFunction.Arn
+
+  VoiceReporterEventPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref VoiceReporterFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt VoiceTranscriptionFinishedRule.Arn
 
   IngressFunctionUrl:
     Type: AWS::Lambda::Url

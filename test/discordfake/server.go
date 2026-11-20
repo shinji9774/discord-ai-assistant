@@ -46,6 +46,15 @@ type Response struct {
 	Files         map[string]string // ファイル名 → 中身。添付が無ければ空の map
 }
 
+// ChannelMessage はチャンネルへの投稿（POST .../channels/{id}/messages）。
+type ChannelMessage struct {
+	ChannelID      string
+	Authorization  string // Authorization ヘッダの値
+	Content        string
+	AllowedUserIDs []string          // allowed_mentions.users。指定が無ければ nil
+	Files          map[string]string // ファイル名 → 中身。添付が無ければ空の map
+}
+
 // Registration はコマンドの一括登録（PUT .../applications/{app}/commands）。
 type Registration struct {
 	ApplicationID string
@@ -79,11 +88,16 @@ type historyRejection struct {
 	code   int
 }
 
+// messagePayload は、送られたメッセージの JSON のうち fake が記録する項目。
 type messagePayload struct {
-	Content string `json:"content"`
+	Content         string `json:"content"`
+	AllowedMentions struct {
+		Users []string `json:"users"`
+	} `json:"allowed_mentions"`
 }
 
-// Server は Discord REST のうち応答の更新とコマンド登録、application 情報の取得、チャンネルの会話履歴の取得、および添付ファイルのダウンロード（GET）に応える http.Handler。
+// Server は Discord REST のうち応答の更新とコマンド登録、application 情報の取得、チャンネルの会話履歴の取得とチャンネルへの投稿、
+// および添付ファイルのダウンロード（GET）に応える http.Handler。
 type Server struct {
 	mu                     sync.Mutex
 	failStatus             int
@@ -91,6 +105,9 @@ type Server struct {
 	responses              []Response
 	nextUnread             int           // WaitForResponse がまだ渡していない最初の応答の位置
 	responseAdded          chan struct{} // 応答が届くたびに閉じて作り直す
+	channelMessages        []ChannelMessage
+	nextUnreadMessage      int           // WaitForChannelMessage がまだ渡していない最初の投稿の位置
+	channelMessageAdded    chan struct{} // 投稿が届くたびに閉じて作り直す
 	registrations          []Registration
 	attachments            map[string]string           // URL のパス → 中身
 	history                map[string][]HistoryMessage // チャンネル ID → 投稿
@@ -112,6 +129,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveRegistration(w, r, segments)
 	case r.Method == http.MethodGet && isCurrentApplicationPath(segments):
 		s.serveCurrentApplication(w, r)
+	case r.Method == http.MethodPost && isHistoryPath(segments): // 投稿は履歴と同じ .../channels/{id}/messages
+		s.serveChannelMessage(w, r, segments[len(segments)-2])
 	case r.Method == http.MethodGet && isHistoryPath(segments):
 		s.serveHistory(w, r, segments[len(segments)-2])
 	case r.Method == http.MethodGet:
@@ -188,12 +207,12 @@ func messageID(m HistoryMessage) uint64 {
 
 func (s *Server) serveResponseUpdate(w http.ResponseWriter, r *http.Request, segments []string) {
 	n := len(segments)
-	resp, err := parseResponse(r)
+	payload, files, err := parseMessage(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	resp.ApplicationID, resp.Token = segments[n-4], segments[n-3]
+	resp := Response{ApplicationID: segments[n-4], Token: segments[n-3], Content: payload.Content, Files: files}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -207,6 +226,36 @@ func (s *Server) serveResponseUpdate(w http.ResponseWriter, r *http.Request, seg
 		"id":         fakeSnowflake,
 		"channel_id": fakeSnowflake,
 		"content":    resp.Content,
+	})
+}
+
+// serveChannelMessage はチャンネルへの投稿を記録し、作ったメッセージを返す。FailWith 中は記録しない。
+func (s *Server) serveChannelMessage(w http.ResponseWriter, r *http.Request, channelID string) {
+	payload, files, err := parseMessage(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	msg := ChannelMessage{
+		ChannelID:      channelID,
+		Authorization:  r.Header.Get(authorizationKey),
+		Content:        payload.Content,
+		AllowedUserIDs: payload.AllowedMentions.Users,
+		Files:          files,
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rejectIfFailing(w) {
+		return
+	}
+	s.channelMessages = append(s.channelMessages, msg)
+	close(s.channelMessageAdded)
+	s.channelMessageAdded = make(chan struct{})
+	writeJSON(w, map[string]any{
+		"id":         fakeSnowflake,
+		"channel_id": channelID,
+		"content":    msg.Content,
 	})
 }
 
@@ -287,40 +336,35 @@ func commandNames(definitions []map[string]any) []string {
 	return names
 }
 
-// parseResponse は JSON 本体と multipart（payload_json とファイル部）の両方を解釈する。
-func parseResponse(r *http.Request) (Response, error) {
-	resp := Response{Files: map[string]string{}}
+// parseMessage は JSON 本体と multipart（payload_json とファイル部）の両方を解釈し、JSON の項目と添付（ファイル名 → 中身）を返す。
+func parseMessage(r *http.Request) (messagePayload, map[string]string, error) {
+	var payload messagePayload
+	files := map[string]string{}
 	mediaType, params, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if mediaType != multipartMedia {
-		var payload messagePayload
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			return Response{}, err
-		}
-		resp.Content = payload.Content
-		return resp, nil
+		err := json.NewDecoder(r.Body).Decode(&payload)
+		return payload, files, err
 	}
 	reader := multipart.NewReader(r.Body, params["boundary"])
 	for {
 		part, err := reader.NextPart()
 		if err == io.EOF {
-			return resp, nil
+			return payload, files, nil
 		}
 		if err != nil {
-			return Response{}, err
+			return messagePayload{}, nil, err
 		}
 		body, err := io.ReadAll(part)
 		if err != nil {
-			return Response{}, err
+			return messagePayload{}, nil, err
 		}
-		if part.FormName() == payloadJSONPart {
-			var payload messagePayload
-			if err := json.Unmarshal(body, &payload); err != nil {
-				return Response{}, err
-			}
-			resp.Content = payload.Content
+		if part.FormName() != payloadJSONPart {
+			files[part.FileName()] = string(body)
 			continue
 		}
-		resp.Files[part.FileName()] = string(body)
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return messagePayload{}, nil, err
+		}
 	}
 }
 
@@ -365,6 +409,36 @@ func (s *Server) Registrations() []Registration {
 	return append([]Registration(nil), s.registrations...)
 }
 
+func (s *Server) ChannelMessages() []ChannelMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]ChannelMessage(nil), s.channelMessages...)
+}
+
+// WaitForChannelMessage はまだ渡していない最初の投稿を、届いた順に 1 件返す。
+// 記録済みなら待たずに返し、無ければ届くかタイムアウトするまで待つ。
+func (s *Server) WaitForChannelMessage(timeout time.Duration) (ChannelMessage, bool) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		s.mu.Lock()
+		if s.nextUnreadMessage < len(s.channelMessages) {
+			msg := s.channelMessages[s.nextUnreadMessage]
+			s.nextUnreadMessage++
+			s.mu.Unlock()
+			return msg, true
+		}
+		added := s.channelMessageAdded
+		s.mu.Unlock()
+
+		select {
+		case <-added:
+		case <-timer.C:
+			return ChannelMessage{}, false
+		}
+	}
+}
+
 // AddAttachment は GET path に返す添付ファイルの中身を登録する。
 func (s *Server) AddAttachment(path, content string) {
 	s.mu.Lock()
@@ -405,9 +479,13 @@ func (s *Server) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failStatus, s.registrationFailStatus, s.responses, s.nextUnread, s.registrations, s.attachments = 0, 0, nil, 0, nil, map[string]string{}
+	s.channelMessages, s.nextUnreadMessage = nil, 0
 	s.history = map[string][]HistoryMessage{}
 	s.historyRejections = map[string]historyRejection{}
 	if s.responseAdded == nil {
 		s.responseAdded = make(chan struct{})
+	}
+	if s.channelMessageAdded == nil {
+		s.channelMessageAdded = make(chan struct{})
 	}
 }

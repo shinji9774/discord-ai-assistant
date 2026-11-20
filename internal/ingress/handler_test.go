@@ -39,6 +39,16 @@ const (
 		`"data":{"name":"summarize","options":[{"name":"since","type":3,"value":"2026-11-18"}]}}`
 
 	helpCommandBody = `{"type":2,"application_id":"app1","token":"tok1","channel_id":"ch1","data":{"name":"help"}}`
+
+	// 依頼 ID・サーバ・実行者・チャンネルの種類（2 はボイスチャンネル）を持つ interaction。
+	contextCommandBody = `{"type":2,"id":"1400000000000000001","application_id":"app1","token":"tok1","guild_id":"1500000000000000001",` +
+		`"channel_id":"ch1","channel":{"id":"ch1","type":2},"member":{"user":{"id":"1600000000000000001"}},` +
+		`"data":{"name":"translate","options":[{"name":"text","type":3,"value":"Hello"}]}}`
+
+	// 入力に秘密を含むコマンド。visibility の指定は無い。
+	secretCommandName = "summarize-voice"
+	secretCommandBody = `{"type":2,"application_id":"app1","token":"tok1","channel_id":"ch1",` +
+		`"data":{"name":"summarize-voice","options":[{"name":"link","type":3,"value":"https://craig.horse/rec/AbCdEf1234?key=secret"}]}}`
 )
 
 // recordingInvoker は依頼を記録し、設定されたエラーを返す WorkerInvoker の fake。
@@ -61,6 +71,19 @@ func (r *recordingInvoker) recorded() []command.Invocation {
 	return append([]command.Invocation(nil), r.invocations...)
 }
 
+// secretCommands は、名前の集合で答える SecretInputs の fake。
+type secretCommands map[string]bool
+
+func (s secretCommands) HasSecretInput(commandName string) bool {
+	return s[commandName]
+}
+
+// cmd/ingress が渡す *command.Registry が SecretInputs を満たすことを、コンパイル時に確かめる。
+var _ ingress.SecretInputs = (*command.Registry)(nil)
+
+// testSecretInputs は、テストの Handler が秘密入力として扱うコマンド。
+var testSecretInputs = secretCommands{secretCommandName: true}
+
 func signedRequest(t *testing.T, privateKey ed25519.PrivateKey, body string) events.LambdaFunctionURLRequest {
 	t.Helper()
 	return events.LambdaFunctionURLRequest{
@@ -76,7 +99,7 @@ func newHandler(t *testing.T, invoker ingress.WorkerInvoker) (*ingress.Handler, 
 	t.Helper()
 	publicKey, privateKey := newKeyPair(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return ingress.NewHandler(publicKey, invoker, logger), privateKey
+	return ingress.NewHandler(publicKey, invoker, testSecretInputs, logger), privateKey
 }
 
 // newLoggedHandler は newHandler と同じ Handler を、JSON のログを buffer に書く logger で作る。
@@ -84,7 +107,7 @@ func newLoggedHandler(t *testing.T, invoker ingress.WorkerInvoker) (*ingress.Han
 	t.Helper()
 	publicKey, privateKey := newKeyPair(t)
 	logs := &bytes.Buffer{}
-	return ingress.NewHandler(publicKey, invoker, slog.New(slog.NewJSONHandler(logs, nil))), privateKey, logs
+	return ingress.NewHandler(publicKey, invoker, testSecretInputs, slog.New(slog.NewJSONHandler(logs, nil))), privateKey, logs
 }
 
 // assertLogRecords は JSON Lines のログから time を除いて全体を比較する。
@@ -392,4 +415,59 @@ func TestHandle_CommandWithPermissions_PassesPermissionsToWorker(t *testing.T) {
 	if recorded := invoker.recorded(); !reflect.DeepEqual(recorded, wantInvocations) {
 		t.Errorf("invocations = %+v, want %+v", recorded, wantInvocations)
 	}
+}
+
+// 条件: 依頼 ID、サーバ、実行者、チャンネルの種類（ボイスチャンネル）を持つ interaction。
+// 内容: 4 項目が Invocation に入って worker に渡る。
+func TestHandle_CommandWithRequestContext_PassesContextToWorker(t *testing.T) {
+	invoker := &recordingInvoker{}
+	handler, privateKey := newHandler(t, invoker)
+	req := signedRequest(t, privateKey, contextCommandBody)
+
+	_, _ = handler.Handle(context.Background(), req)
+
+	wantInvocations := []command.Invocation{{
+		ApplicationID:    "app1",
+		InteractionToken: "tok1",
+		ChannelID:        "ch1",
+		CommandName:      "translate",
+		Options:          map[string]string{"text": "Hello"},
+		InteractionID:    "1400000000000000001",
+		GuildID:          "1500000000000000001",
+		UserID:           "1600000000000000001",
+		ChannelType:      discord.ChannelTypeGuildVoice,
+	}}
+	if recorded := invoker.recorded(); !reflect.DeepEqual(recorded, wantInvocations) {
+		t.Errorf("invocations = %+v, want %+v", recorded, wantInvocations)
+	}
+}
+
+// 条件: 入力に秘密を含むコマンド（visibility の指定なし）。
+// 内容: 200 で flags 64 付きの {"type":5} が返り、worker に Invocation が 1 件渡される（1.2）。
+func TestHandle_SecretInputCommand_ReturnsEphemeralDeferred(t *testing.T) {
+	invoker := &recordingInvoker{}
+	handler, privateKey := newHandler(t, invoker)
+	req := signedRequest(t, privateKey, secretCommandBody)
+
+	got, _ := handler.Handle(context.Background(), req)
+
+	assertResponse(t, got, jsonResponse(http.StatusOK, `{"type":5,"data":{"flags":64}}`))
+	if recorded := invoker.recorded(); len(recorded) != 1 {
+		t.Errorf("invocations = %+v, want 1 item", recorded)
+	}
+}
+
+// 条件: 入力に秘密を含むコマンドで、worker の起動に失敗する。
+// 内容: 200 で失敗メッセージと flags 64 付きの {"type":4} が返り、失敗ログにはコマンド名とエラーだけが出る（入力は出ない）。
+func TestHandle_SecretInputCommandWorkerInvokeFails_ReturnsEphemeralFailureWithoutLoggingInput(t *testing.T) {
+	handler, privateKey, logs := newLoggedHandler(t, &recordingInvoker{err: errors.New("boom")})
+	req := signedRequest(t, privateKey, secretCommandBody)
+
+	got, _ := handler.Handle(context.Background(), req)
+
+	want := jsonResponse(http.StatusOK, `{"type":4,"data":{"content":"処理に失敗しました。時間をおいてもう一度実行してください。","flags":64}}`)
+	assertResponse(t, got, want)
+	assertLogRecords(t, logs, []map[string]any{
+		{"level": "ERROR", "msg": "worker invoke failed", "command": "summarize-voice", "error": "boom"},
+	})
 }

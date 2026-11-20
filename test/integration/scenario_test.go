@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,8 +25,10 @@ import (
 	"github.com/disgoorg/snowflake/v2"
 
 	"discord-ai-assistant/test/bedrockfake"
+	"discord-ai-assistant/test/craigfake"
 	"discord-ai-assistant/test/discordfake"
 	"discord-ai-assistant/test/ssmfake"
+	"discord-ai-assistant/test/transcribefake"
 	"discord-ai-assistant/test/translatefake"
 	"discord-ai-assistant/test/websearchfake"
 )
@@ -62,14 +65,17 @@ const (
 	imageSourceNotice     = "元にする画像を受け付けられませんでした。受け付けられるのは、PNG または JPEG で、10 MB 以下、各辺 64 ピクセル以上、総画素数 25,000,000 以下（例: 5712×4284）、縦横比 1:2.5 から 2.5:1 の画像です。"
 )
 
-// resetFakes は各テストの先頭で呼び、Discord・Bedrock・Translate・Lambda・Web 検索の fake を初期状態に戻す。
-// ssmfake は worker の起動時の記録を検証に使うので初期化しない。
+// resetFakes は各テストの先頭で呼び、Discord・Bedrock・Translate・Lambda・Web 検索・Craig・S3・Transcribe の fake を初期状態に戻す。
+// ssmfake（worker 用と voicereporter 用）は、起動時に読む bot トークンと、その記録を検証に使うので初期化しない。
 func resetFakes() {
 	discord.Reset()
 	bedrock.Reset()
 	translateF.Reset()
 	lambdaF.Reset()
 	webSearch.Reset()
+	craigF.Reset()
+	s3F.Reset()
+	transcribeF.Reset()
 	forwardToWorker()
 }
 
@@ -728,5 +734,297 @@ func TestSummarize_ModelFails_RepliesFailureWithoutLoggingConversation(t *testin
 	got := logFacts{ContainsConversation: strings.Contains(logs, conversationText), ContainsFailureLog: strings.Contains(logs, commandFailedLog)}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("worker logs facts = %+v, want %+v:\n%s", got, want, logs)
+	}
+}
+
+const (
+	// voiceReporterSucceeded は、voicereporter が nil を返したときの RIE の応答の本文。
+	voiceReporterSucceeded = "null"
+	// unknownVoiceJobName は、マニフェストのない依頼のジョブ名（接頭辞は voicesummary.JobNamePrefix）。
+	unknownVoiceJobName = "summarize-voice-1499999999999999999-1"
+)
+
+// invokeVoiceReporter は、jobName の文字起こしが完了したときの EventBridge のイベントを voicereporter の RIE へ送り、応答の本文を返す。
+// RIE は同時に 1 件しか処理できないので、worker の呼び出しと同じ mutex を取る。
+func invokeVoiceReporter(t *testing.T, jobName string) string {
+	t.Helper()
+	detail, err := json.Marshal(map[string]string{"TranscriptionJobName": jobName, "TranscriptionJobStatus": "COMPLETED"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(events.EventBridgeEvent{
+		Version:    "0",
+		Source:     "aws.transcribe",
+		DetailType: "Transcribe Job State Change",
+		Region:     "ap-northeast-1",
+		Detail:     detail,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rieInvocationMu.Lock()
+	defer rieInvocationMu.Unlock()
+	resp, err := http.Post(voiceReporterURL, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+// 条件: マニフェストのない依頼のジョブ名で、完了のイベントを voicereporter に渡す。
+// 内容: voicereporter が起動して正常に終わり、チャンネルには何も投稿しない。
+func TestVoiceReporter_UnknownRequest_EndsWithoutPosting(t *testing.T) {
+	resetFakes()
+
+	response := invokeVoiceReporter(t, unknownVoiceJobName)
+
+	type reporterFacts struct {
+		Response  string
+		PostCount int
+	}
+	want := reporterFacts{Response: voiceReporterSucceeded, PostCount: 0}
+	got := reporterFacts{Response: response, PostCount: len(discord.ChannelMessages())}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("voicereporter = %+v, want %+v", got, want)
+	}
+}
+
+const (
+	// disgo の REST と Craig の API が snowflake を要求するため、数字だけの ID を使う。
+	voiceGuildID       = "1100000000000000001"
+	voiceChannelID     = "1300000000000000002"
+	voiceInteractionID = "1400000000000000001" // 依頼 ID になる
+	voiceRequesterID   = "1500000000000000001"
+
+	voiceRecordingID  = "AbCdEfGhIjKl"
+	voiceRecordingKey = "XyZ123secret"
+
+	// botCanPostResults は VIEW_CHANNEL（1<<10）、SEND_MESSAGES（1<<11）、ATTACH_FILES（1<<15）の和。
+	botCanPostResults = "35840"
+	// textChannelType は Discord のチャンネルの種類のうち、サーバのテキストチャンネル（GUILD_TEXT）。
+	textChannelType = 0
+
+	voiceAccepted = "録音の要約を受け付けました。完了したら、このチャンネルに結果を投稿します。"
+	voiceSummary  = "## 予算\n- たろう: 予算の話"
+	// voiceHeading は voiceRecording の録音の見出し（開始 2026-11-18 05:00 UTC、長さ 4980 秒、bot を除く話者 2 人）。
+	voiceHeading = "**録音開始**: 2026-11-18 14:00（日本時間） / **長さ**: 1 時間 23 分 / **話者**: たろう、はなこ"
+	// voiceTranscript は、たろう（トラック 1）とはなこ（トラック 2）の発話を開始時刻の順に並べたもの。754 秒 = 00:12:34。
+	voiceTranscript = "[00:00:00] たろう: 始めます\n[00:00:05] はなこ: よろしくお願いします\n[00:12:34] たろう: 次は予算の話です"
+)
+
+// voiceLink は voiceRecording の録音リンク。ホストは worker の CRAIG_BASE_URL と同じ craigfake にする。
+func voiceLink() string {
+	return craigURL + "/rec/" + voiceRecordingID + "?key=" + voiceRecordingKey
+}
+
+// voiceJobName は、voiceInteractionID の依頼の track の文字起こしのジョブ名（"summarize-voice-{依頼 ID}-{トラック}"）。
+func voiceJobName(track int) string {
+	return "summarize-voice-" + voiceInteractionID + "-" + strconv.Itoa(track)
+}
+
+// voiceKey は、voiceInteractionID の依頼の S3 のキー（"requests/{依頼 ID}/" + rest）。
+func voiceKey(rest string) string {
+	return "requests/" + voiceInteractionID + "/" + rest
+}
+
+// voiceBody は署名前の /summarize-voice の interaction の本文を作る。
+// サーバのテキストチャンネルで、結果を投稿できる権限を bot に付け、実行者を voiceRequesterID にする。
+func voiceBody(t *testing.T, link string) string {
+	t.Helper()
+	data := map[string]any{
+		"name":    "summarize-voice",
+		"options": []map[string]any{{"name": "link", "type": 3, "value": link}},
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(interactionBody(t, data)), &body); err != nil {
+		t.Fatal(err)
+	}
+	body["id"] = voiceInteractionID
+	body["guild_id"] = voiceGuildID
+	body["channel_id"] = voiceChannelID
+	body["channel"] = map[string]any{"id": voiceChannelID, "type": textChannelType}
+	body["app_permissions"] = botCanPostResults
+	body["member"] = map[string]any{"user": map[string]any{"id": voiceRequesterID}, "permissions": "0"}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+}
+
+// voiceRecording は、停止済みで、たろう・はなこ・音楽 bot の 3 トラックがある 1 時間 23 分の録音。
+func voiceRecording() craigfake.Recording {
+	return craigfake.Recording{
+		ID:              voiceRecordingID,
+		Key:             voiceRecordingKey,
+		GuildID:         voiceGuildID,
+		StartTime:       time.Date(2026, 11, 18, 5, 0, 0, 0, time.UTC),
+		DurationSeconds: 4980,
+		Users: []craigfake.User{
+			{Track: 1, Username: "taro", GlobalName: "たろう"},
+			{Track: 2, Username: "hanako", GlobalName: "はなこ"},
+			{Track: 3, Username: "music-bot", Bot: true},
+		},
+		Tracks: map[int][]byte{1: []byte("flac-taro"), 2: []byte("flac-hanako"), 3: []byte("flac-music-bot")},
+	}
+}
+
+// arrangeVoiceRecording は craigfake に録音を置き、FLAC の zip の変換を完了済みにする（変換を待たないため）。
+func arrangeVoiceRecording() {
+	craigF.AddRecording(voiceRecording())
+	craigF.SetJob(voiceRecordingID, craigfake.Job{Status: "complete", OutputFileName: voiceRecordingID + ".flac.zip"})
+}
+
+// audioSegment は Amazon Transcribe の結果の results.audio_segments[] の 1 要素（使う項目だけ）。実物と同じく、時刻は秒の文字列。
+type audioSegment struct {
+	ID         int    `json:"id"`
+	Transcript string `json:"transcript"`
+	StartTime  string `json:"start_time"`
+	EndTime    string `json:"end_time"`
+}
+
+// transcribeResult は、segments を発話に持つ Amazon Transcribe の結果の JSON を作る。
+func transcribeResult(t *testing.T, segments ...audioSegment) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(map[string]any{
+		"status":  "COMPLETED",
+		"results": map[string]any{"audio_segments": segments},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+// voiceTranscriptionJob は、voiceInteractionID の依頼の track の、開始直後の文字起こしのジョブ。
+func voiceTranscriptionJob(track int) transcribefake.Job {
+	return transcribefake.Job{
+		Name:         voiceJobName(track),
+		LanguageCode: "ja-JP",
+		MediaFormat:  "flac",
+		MediaURI:     "s3://" + voiceBucketName + "/" + voiceKey("audio/"+strconv.Itoa(track)+".flac"),
+		OutputBucket: voiceBucketName,
+		OutputKey:    voiceKey("transcripts/" + strconv.Itoa(track) + ".json"),
+		Status:       "IN_PROGRESS",
+	}
+}
+
+// 条件: 停止済みの録音（人の話者 2 人と音楽 bot）の録音リンクで、結果を投稿できるテキストチャンネルから /summarize-voice を実行する。
+// 内容: 処理中の表示と受け付けの返信が実行者だけに見える形で返り、人の話者の音声とマニフェストだけが S3 に置かれ、人の話者ごとに日本語の文字起こしが始まる。
+func TestSummarizeVoice_ValidLink_AcceptsAndStartsTranscriptionPerHumanSpeaker(t *testing.T) {
+	resetFakes()
+	arrangeVoiceRecording()
+
+	response := invokeIngress(t, voiceBody(t, voiceLink()), ingressPrivate)
+
+	type acceptanceFacts struct {
+		IngressStatus int
+		IngressBody   string
+		Reply         discordfake.Response
+		StoredKeys    []string
+		Jobs          []transcribefake.Job
+	}
+	want := acceptanceFacts{
+		IngressStatus: http.StatusOK,
+		IngressBody:   privateDeferredResponse,
+		Reply:         discordReply(voiceAccepted, map[string]string{}),
+		StoredKeys:    []string{voiceKey("audio/1.flac"), voiceKey("audio/2.flac"), voiceKey("manifest.json")},
+		Jobs:          []transcribefake.Job{voiceTranscriptionJob(1), voiceTranscriptionJob(2)},
+	}
+	got := acceptanceFacts{
+		IngressStatus: response.StatusCode,
+		IngressBody:   response.Body,
+		Reply:         waitForDiscordResponse(t),
+		StoredKeys:    s3F.Keys(voiceBucketName),
+		Jobs:          transcribeF.Jobs(),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("受け付け = %+v,\nwant %+v", got, want)
+	}
+}
+
+// 条件: 有効な録音リンクで /summarize-voice を実行し、worker の処理が終わるまで待つ。
+// 内容: 録音の鍵が worker のログにもマニフェストにも含まれない（マニフェストは置かれている）。
+func TestSummarizeVoice_ValidLink_DoesNotLeakRecordingKey(t *testing.T) {
+	resetFakes()
+	arrangeVoiceRecording()
+	invokeIngress(t, voiceBody(t, voiceLink()), ingressPrivate)
+	waitForDiscordResponse(t)
+	waitForRIEIdle()
+
+	logs := workerLogs(t)
+
+	manifest, stored := s3F.Object(voiceBucketName, voiceKey("manifest.json"))
+	type leakFacts struct{ ManifestStored, LogsContainKey, ManifestContainsKey bool }
+	want := leakFacts{ManifestStored: true, LogsContainKey: false, ManifestContainsKey: false}
+	got := leakFacts{
+		ManifestStored:      stored,
+		LogsContainKey:      strings.Contains(logs, voiceRecordingKey),
+		ManifestContainsKey: strings.Contains(string(manifest), voiceRecordingKey),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("鍵の漏れ = %+v, want %+v", got, want)
+	}
+}
+
+// 条件: 受け付けたあと、トラック 1 の文字起こしだけが終わった時点で 1 回目の完了イベントを渡し、続いてトラック 2 も終わらせ、その完了イベントを 2 回（重複配信）渡す。
+// 内容: 1 回目のイベントでは投稿しない。全トラックが終わると、依頼者への通知つきの見出しと要約が 1 回だけ投稿され、transcript.txt が添付される。
+// 　　 モデルには話者名と経過時刻つきの文字起こしが 1 回だけ渡り、S3 には report.claim のほか何も残らない。
+func TestSummarizeVoice_AllJobsCompleted_PostsSummaryOnceAndDiscardsData(t *testing.T) {
+	resetFakes()
+	arrangeVoiceRecording()
+	bedrock.RespondWith(voiceSummary, "end_turn")
+	invokeIngress(t, voiceBody(t, voiceLink()), ingressPrivate)
+	waitForDiscordResponse(t)
+	transcribeF.Complete(voiceJobName(1), transcribeResult(t,
+		audioSegment{ID: 0, Transcript: "始めます", StartTime: "0.0", EndTime: "1.2"},
+		audioSegment{ID: 1, Transcript: "次は予算の話です", StartTime: "754.0", EndTime: "756.5"},
+	))
+	invokeVoiceReporter(t, voiceJobName(1))
+	postsWhilePending := len(discord.ChannelMessages())
+	transcribeF.Complete(voiceJobName(2), transcribeResult(t,
+		audioSegment{ID: 0, Transcript: "よろしくお願いします", StartTime: "5.0", EndTime: "6.8"},
+	))
+
+	responses := []string{invokeVoiceReporter(t, voiceJobName(2)), invokeVoiceReporter(t, voiceJobName(2))}
+
+	var transcriptsToModel []string
+	for _, r := range bedrock.Requests() {
+		transcriptsToModel = append(transcriptsToModel, r.UserText)
+	}
+	type reportFacts struct {
+		Responses          []string
+		PostsWhilePending  int
+		Posts              []discordfake.ChannelMessage
+		TranscriptsToModel []string
+		RemainingKeys      []string
+	}
+	want := reportFacts{
+		Responses:         []string{voiceReporterSucceeded, voiceReporterSucceeded},
+		PostsWhilePending: 0,
+		Posts: []discordfake.ChannelMessage{{
+			ChannelID:      voiceChannelID,
+			Authorization:  "Bot " + botTokenValue,
+			Content:        "<@" + voiceRequesterID + ">\n" + voiceHeading + "\n\n" + voiceSummary,
+			AllowedUserIDs: []string{voiceRequesterID},
+			Files:          map[string]string{"transcript.txt": voiceTranscript},
+		}},
+		TranscriptsToModel: []string{voiceTranscript},
+		RemainingKeys:      []string{voiceKey("report.claim")},
+	}
+	got := reportFacts{
+		Responses:          responses,
+		PostsWhilePending:  postsWhilePending,
+		Posts:              discord.ChannelMessages(),
+		TranscriptsToModel: transcriptsToModel,
+		RemainingKeys:      s3F.Keys(voiceBucketName),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("完了後 = %+v,\nwant %+v", got, want)
 	}
 }

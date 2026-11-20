@@ -1,12 +1,10 @@
 package reply
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net/url"
-	"unicode/utf16"
 
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
@@ -22,6 +20,12 @@ var noAllowedMentions = discord.AllowedMentions{
 	Roles: []snowflake.ID{},
 	Users: []snowflake.ID{},
 }
+
+// noMention は、応答の更新の本文の先頭に置く文字列。応答の更新は誰にも通知しない。
+const noMention = ""
+
+// responseUpdateOperation は、応答の更新の失敗をエラー文で示す操作の名前。
+const responseUpdateOperation = "response update"
 
 // DiscordResponder は disgo の REST で interaction の応答を更新する。
 // interaction token の経路は認可ヘッダが要らないため、bot トークンは持たない。
@@ -42,45 +46,26 @@ func (r *DiscordResponder) Respond(ctx context.Context, inv command.Invocation, 
 	}
 	update := buildMessageUpdate(result)
 	if _, err := r.rest.UpdateInteractionResponse(applicationID, inv.InteractionToken, update, rest.WithCtx(ctx)); err != nil {
-		return redactRequestURL(err)
+		return redactRESTError(err, responseUpdateOperation)
 	}
 	return nil
 }
 
 func buildMessageUpdate(result command.Result) discord.MessageUpdate {
-	content := result.Text
-	var files []*discord.File
-	if utf16Length(result.Text) > DiscordContentLimit {
-		content = AttachmentNotice
-		files = append(files, discord.NewFile(attachmentFileName(result.Format), "", bytes.NewReader([]byte(result.Text))))
-	}
-	for _, f := range result.Files {
-		files = append(files, discord.NewFile(f.Name, "", bytes.NewReader(f.Content)))
-	}
-	return discord.NewMessageUpdate().WithContent(content).WithFiles(files...).WithAllowedMentions(&noAllowedMentions)
+	layout := layoutMessage(noMention, result)
+	return discord.NewMessageUpdate().WithContent(layout.content).WithFiles(layout.files...).WithAllowedMentions(&noAllowedMentions)
 }
 
-// attachmentFileName は、本文の記法に合うファイル名を返す。markdown は拡張子を .md にして、閲覧時に整形されるようにする。
-func attachmentFileName(format command.TextFormat) string {
-	if format == command.TextFormatMarkdown {
-		return MarkdownAttachmentFileName
-	}
-	return AttachmentFileName
-}
-
-func utf16Length(s string) int {
-	return len(utf16.Encode([]rune(s)))
-}
-
-// redactRequestURL は interaction token を含む URL とレスポンス本文をエラー文から除く。Discord のコードと文言は残す。
-func redactRequestURL(err error) error {
+// redactRESTError は、URL（interaction token を含む）・レスポンス本文・送った本文をエラー文から除く。Discord のコードと文言は残す。
+// operation は、失敗した操作の名前としてエラー文に入れる。
+func redactRESTError(err error, operation string) error {
 	var restErr *rest.Error
 	if errors.As(err, &restErr) && restErr.Response != nil {
-		return fmt.Errorf("discord rejected the response update: status %d, code %d: %s", restErr.Response.StatusCode, restErr.Code, restErr.Message)
+		return fmt.Errorf("discord rejected the %s: status %d, code %d: %s", operation, restErr.Response.StatusCode, restErr.Code, restErr.Message)
 	}
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
-		return fmt.Errorf("discord response update request failed: %w", urlErr.Err)
+		return fmt.Errorf("discord %s request failed: %w", operation, urlErr.Err)
 	}
-	return errors.New("discord response update failed")
+	return fmt.Errorf("discord %s failed", operation)
 }

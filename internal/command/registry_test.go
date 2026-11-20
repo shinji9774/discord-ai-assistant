@@ -91,3 +91,56 @@ func TestNewRegistry_DuplicateName_Panics(t *testing.T) {
 		t.Error("NewRegistry() did not panic on duplicate name")
 	}
 }
+
+// secretStubCommand は、入力に秘密を含む目印（SecretInput）を持つ stubCommand。
+type secretStubCommand struct {
+	stubCommand
+}
+
+func (secretStubCommand) HasSecretInput() {}
+
+var _ command.SecretInput = secretStubCommand{}
+
+// newSecretAwareRegistry は、目印のない translate と、目印のある summarize-voice を登録する。
+func newSecretAwareRegistry() *command.Registry {
+	return command.NewRegistry(
+		stubCommand{name: "translate"},
+		secretStubCommand{stubCommand: stubCommand{name: "summarize-voice"}},
+	)
+}
+
+// 条件: SecretInput を実装したコマンド（summarize-voice）の名前で問い合わせる。
+// 内容: true が返る。
+func TestHasSecretInput_SecretInputCommand_ReturnsTrue(t *testing.T) {
+	registry := newSecretAwareRegistry()
+
+	got := registry.HasSecretInput("summarize-voice")
+
+	if !got {
+		t.Error(`HasSecretInput("summarize-voice") = false, want true`)
+	}
+}
+
+// 条件: SecretInput を実装していないコマンド（translate）の名前で問い合わせる。
+// 内容: false が返る。
+func TestHasSecretInput_PlainCommand_ReturnsFalse(t *testing.T) {
+	registry := newSecretAwareRegistry()
+
+	got := registry.HasSecretInput("translate")
+
+	if got {
+		t.Error(`HasSecretInput("translate") = true, want false`)
+	}
+}
+
+// 条件: 登録されていない名前で問い合わせる。
+// 内容: false が返る（panic しない）。
+func TestHasSecretInput_UnknownName_ReturnsFalse(t *testing.T) {
+	registry := newSecretAwareRegistry()
+
+	got := registry.HasSecretInput("unknown")
+
+	if got {
+		t.Error(`HasSecretInput("unknown") = true, want false`)
+	}
+}

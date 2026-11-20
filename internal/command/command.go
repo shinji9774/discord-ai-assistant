@@ -22,6 +22,10 @@ type Invocation struct {
 	Attachments       map[string]Attachment `json:"attachments,omitempty"`        // key は添付ファイル型のオプション名
 	AppPermissions    discord.Permissions   `json:"app_permissions,omitempty"`    // 実行元チャンネルでの bot の権限
 	MemberPermissions discord.Permissions   `json:"member_permissions,omitempty"` // 実行元チャンネルでの実行者の権限
+	InteractionID     string                `json:"interaction_id,omitempty"`     // 依頼 ID に使う
+	GuildID           string                `json:"guild_id,omitempty"`           // 実行したサーバ
+	UserID            string                `json:"user_id,omitempty"`            // 実行者
+	ChannelType       discord.ChannelType   `json:"channel_type,omitempty"`       // 実行したチャンネルの種類
 }
 
 // Attachment は利用者が添付したファイルの情報。中身は URL から取得する。
@@ -73,4 +77,11 @@ type File struct {
 type Command interface {
 	Definition() discord.SlashCommandCreate
 	Execute(ctx context.Context, inv Invocation) (Result, error)
+}
+
+// SecretInput は、入力に秘密を含むコマンドが実装する。
+// 実装したコマンドは、常に実行者だけに見える形で応答され、入力はログに出ない。
+type SecretInput interface {
+	Command
+	HasSecretInput()
 }

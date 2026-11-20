@@ -16,12 +16,14 @@ Discord の slash command から Amazon Translate と AWS Bedrock（Amazon Nova 
 | `/ask` | 質問に AI が答えて返信する |
 | `/image` | 文章から図を 1 枚生成して投稿する。引数は、文章（`prompt`、必須、最大 1000 文字）、縦横比（`aspect_ratio`）、元にする画像（`source`）、公開範囲（`visibility`）。`source` を指定すると、その画像の線と構図を元に図として描き直す |
 | `/summarize` | 実行したチャンネルの会話を要約する（期間と bot の投稿を含めるかを指定できる） |
+| `/summarize-voice` | Craig で録音したボイスチャンネルの会話を、話者名と経過時刻つきで文字起こしし、要約をチャンネルに投稿する |
 
 ### 構成
 
 - Discord とは Interactions Endpoint（HTTP）だけで連携する。Gateway には接続しない。
 - `ingress`（Lambda 関数、Function URL）が署名を検証し、3 秒以内に応答して `worker` を非同期に呼び出す。
 - `worker`（Lambda 関数）が `/translate` では Amazon Translate（翻訳元の自動判定に Amazon Comprehend）を、`/ask` では Bedrock を呼び出し、結果を Discord に返信する。`/image` では、依頼の審査に Bedrock（ap-northeast-1）の Amazon Nova 2 Lite を、図の生成に `us-west-2` の Bedrock の画像生成モデル（Stability Stable Image Core、元にする画像があるときは Stability Stable Image Control Sketch）を呼び出す。bot トークンは SSM Parameter Store（SecureString）から起動時に読む。
+- `/summarize-voice` では、`worker` が Craig から録音を取得して S3 に置き、話者ごとに Amazon Transcribe の文字起こしを始めたところで受け付けを返す。文字起こしが終わると、EventBridge が `voicereporter`（Lambda 関数）を呼び出す。`voicereporter` は文字起こしをまとめて Bedrock で要約し、チャンネルに投稿してから、S3 に置いたデータを消す。
 - リリースは Git タグ `vX.Y.Z` の push で起動する GitHub Actions が行う。イメージを ECR に push し、CloudFormation の change set を作る。change set は管理者が確認して実行する。
 - AWS リージョンは `ap-northeast-1`。ただし `/image` の画像生成モデルは `us-west-2` を使う。
 - `/image` に渡した文章と画像は米国リージョン（`us-west-2`、`us-east-1`、`us-east-2`）へ送られる。Stable Image Core のデータは `us-west-2`、Control Sketch のデータは `us-east-1`、`us-east-2`、`us-west-2` のいずれかへ送られる。
@@ -47,6 +49,18 @@ Discord の slash command から Amazon Translate と AWS Bedrock（Amazon Nova 
 - 検索の回数に応じた費用がかかる。執筆時点では 1,000 回あたり 7 USD。1 回の `/ask` で行う検索は、最大で `ask.web_search.max_searches` 回（既定は 3 回）。最新の料金は <https://aws.amazon.com/bedrock/agentcore/pricing/> を参照する。
 - 検索結果は、その質問への回答を作る間だけ使い、保存しない。
 
+### `/summarize-voice` の注意点
+
+- 録音の音声を Amazon Transcribe へ、文字起こしの本文を Bedrock の文章生成モデルへ送る。どちらも国内リージョン（`ap-northeast-1`）で処理する。
+- 文字起こしの費用は「話者の人数 × 録音の長さ」に比例する。東京リージョンでは 1 分あたり約 0.006 USD で、話していない時間も含む。例: 5 人 × 60 分 = 300 分で約 1.8 USD。最新の料金は <https://aws.amazon.com/transcribe/pricing/> を参照する。
+- 録音を停止してから実行する。録音中のリンクを渡すと、停止してから実行するよう案内される。
+- bot が扱える録音の長さは 180 分まで（`summarize_voice.max_recording_minutes`）。
+- Craig の無料枠では、1 回の録音は最大 6 時間、録音の保存は 7 日間。保存期間を過ぎた録音は要約できない。
+- bot（音楽 bot、読み上げ bot など）の音声は、文字起こしの対象にならない。
+- 文字起こしの時刻は、録音の最初の音声からの経過。
+- 結果が届かないときは、もう一度実行する（完了の通知が失われることがある）。もう一度実行した分の費用もかかる。
+- 置いた音声と途中結果は、投稿の直後に bot が消す。消せなかったものも、S3 のライフサイクルで 2 日以内に消える。
+
 ### 設定ファイル
 
 調整値（入力と出力の上限、画像の大きさの上限、検索の回数の上限、利用するモデルなど）と、モデルへの指示文は、`internal/config/config.yaml` にまとめてある。
@@ -55,6 +69,7 @@ Discord の slash command から Amazon Translate と AWS Bedrock（Amazon Nova 
 - 値に問題がある（読めない、必要な値が欠けている、範囲の外にある）と、worker は起動に失敗し、問題のあるキーがログに出る。
 - テキスト生成のモデルは `text_model_id` で指定する。CloudFormation のパラメータ `BedrockModelId` は廃止した。既存のスタックを更新するときは、このパラメータを渡さない。
 - `summarize`: /summarize の既定の期間（`default_period_hours`、24 時間）、要約に含める投稿の上限（`max_messages`、1000 件）、出力トークンの上限（`max_output_tokens`）、要約の指示文（`system_prompt`）
+- `summarize_voice`: /summarize-voice の Craig の URL（`craig_base_url`）、扱える録音の長さの上限（`max_recording_minutes`、180 分）、出力トークンの上限（`max_output_tokens`）、要約の指示文（`system_prompt`）
 
 ## 前提
 
@@ -310,7 +325,7 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
 
 ## 6. コマンドの登録
 
-`/translate`、`/ask`、`/image`、`/summarize`、`/help` を Discord に登録する。ローカルでビルドしたイメージの中にある `/register` を使う。
+`/translate`、`/ask`、`/image`、`/summarize`、`/summarize-voice`、`/help` を Discord に登録する。ローカルでビルドしたイメージの中にある `/register` を使う。
 
 1. デプロイ済みのリリースタグを checkout する。`vX.Y.Z` は「4. リリース」で push したタグ。登録されるのはビルドしたソースのコマンド定義なので、デプロイ済みと同じタグでビルドしないと、Discord の画面の選択肢と実際の動作がずれる。
 
@@ -345,11 +360,13 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
 1. 次の URL の `<Application ID>` を置き換えて、ブラウザで開く。スコープは `bot` と `applications.commands` の 2 つ。
 
    ```
-   https://discord.com/oauth2/authorize?client_id=<Application ID>&scope=bot%20applications.commands&permissions=66560
+   https://discord.com/oauth2/authorize?client_id=<Application ID>&scope=bot%20applications.commands&permissions=274879056896
    ```
 
 2. 招待先のサーバを選んで認可する。「Public Bot」が無効なので、アプリの所有者だけが追加できる。サーバの「サーバーを管理」権限が必要。
-3. bot には、/summarize のために「チャンネルを見る」と「メッセージ履歴を読む」の 2 つの権限を付ける（上の URL の `permissions=66560`）。ほかの権限は要らない。招待済みの bot には、サーバの設定でこの 2 つをロールに付ける。権限が無いチャンネルで /summarize を実行すると、bot は権限が無いことを案内する。
+3. bot には、次の権限を付ける（上の URL の `permissions=274879056896`）。ほかの権限は要らない。招待済みの bot には、サーバの設定でこれらをロールに付ける。
+   - /summarize のために「チャンネルを見る」と「メッセージ履歴を読む」。権限が無いチャンネルで /summarize を実行すると、bot は権限が無いことを案内する。
+   - /summarize-voice の結果を投稿するために「メッセージを送信」「スレッドでメッセージを送信」「ファイルを添付」と、ボイスチャンネルのテキストチャットのために「接続」。権限が無いチャンネルで /summarize-voice を実行すると、bot は処理を始めず、結果を投稿できないことを案内する。
 
 /summarize は、チャンネルの会話の本文と投稿者の表示名を Amazon Bedrock の文章生成モデルに送る。会話の本文と要約は、成功時も失敗時もログに残さない。実行者がそのチャンネルのメッセージ履歴を読めない場合は要約しない。
 
@@ -360,6 +377,18 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
 1. Discord のサーバ名のメニューから「サーバー設定」を開く。
 2. 「連携サービス」を開き、この bot のアプリを選んで「管理」を押す。
 3. コマンドごと、またはアプリ全体で、使えるロール・メンバー・チャンネルを設定する。既定の `@everyone` の許可を外し、許可するロールとチャンネルだけを追加する。
+
+### 7-3. Craig を導入して録音を要約する
+
+`/summarize-voice` は、録音 bot「Craig」の録音を要約する。Craig は別の開発者が提供する bot で、この bot とは別に導入する。手順 1 はサーバの管理者が 1 回だけ行い、手順 2〜4 は録音のたびに行う。
+
+1. Craig の公式サイト（<https://craig.chat>）から、Craig をサーバに招待する。
+2. ボイスチャンネルに参加し、Craig の `/join` を実行して録音を始める。録音を始めた人に、Craig から DM で録音リンク（`https://craig.horse/rec/...?key=...`）が届く。
+3. 会話が終わったら、Craig の `/stop` を実行して録音を止める。
+4. 結果を投稿したいチャンネルで `/summarize-voice link:<録音リンク>` を実行する。受け付けの返事は、実行した本人にだけ見える。文字起こしと要約が終わると、そのチャンネルに結果と `transcript.txt` が投稿され、実行した本人に通知が届く。
+
+- 録音リンクには、録音を取り出すための鍵が含まれる。リンクはチャンネルに貼らず、`/summarize-voice` の `link` に直接渡す。`link` の値は、ほかの人には見えない。
+- 録音したサーバと同じサーバで実行する。ほかのサーバの録音は断られる。
 
 ## 開発
 

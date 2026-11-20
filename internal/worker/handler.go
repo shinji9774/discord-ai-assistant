@@ -106,12 +106,14 @@ func (h *Handler) executeAndReply(ctx context.Context, cmd command.Command, inv 
 }
 
 // notifyFailure は失敗をログに残し、元の ctx で失敗メッセージを返信する。
-// 機密の結果は、本文をログに出さない。
+// 機密の結果は本文を、入力に秘密を含むコマンドは入力を、ログに出さない。
 func (h *Handler) notifyFailure(ctx context.Context, inv command.Invocation, result command.Result, cause error) {
 	attrs := []any{
 		logKeyCommand, inv.CommandName,
 		logKeyError, cause.Error(),
-		logKeyInput, inv.Options,
+	}
+	if !h.registry.HasSecretInput(inv.CommandName) {
+		attrs = append(attrs, logKeyInput, inv.Options)
 	}
 	if result.Guidance != nil {
 		attrs = append(attrs, logKeyReason, result.Guidance.Reason)

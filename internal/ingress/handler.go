@@ -50,12 +50,20 @@ const (
 // interaction は Discord の interaction のうち、振り分けに使う最小の部分。
 type interaction struct {
 	Type           int                 `json:"type"`
+	ID             string              `json:"id"`
 	ApplicationID  string              `json:"application_id"`
 	Token          string              `json:"token"`
+	GuildID        string              `json:"guild_id"`
 	ChannelID      string              `json:"channel_id"`
 	AppPermissions discord.Permissions `json:"app_permissions"` // 実行元チャンネルでの bot の権限
-	Member         struct {
+	Channel        struct {
+		Type discord.ChannelType `json:"type"`
+	} `json:"channel"`
+	Member struct {
 		Permissions discord.Permissions `json:"permissions"` // 実行元チャンネルでの実行者の権限
+		User        struct {
+			ID string `json:"id"`
+		} `json:"user"`
 	} `json:"member"`
 	Data struct {
 		Name    string `json:"name"`
@@ -78,15 +86,21 @@ type messageResponse struct {
 	} `json:"data"`
 }
 
+// SecretInputs は、入力に秘密を含むコマンドかを答える。*command.Registry が満たす。
+type SecretInputs interface {
+	HasSecretInput(commandName string) bool
+}
+
 // Handler は Discord の interaction を受け、署名検証と振り分けを行う。
 type Handler struct {
 	publicKey ed25519.PublicKey
 	invoker   WorkerInvoker
+	secrets   SecretInputs
 	logger    *slog.Logger
 }
 
-func NewHandler(publicKey ed25519.PublicKey, invoker WorkerInvoker, logger *slog.Logger) *Handler {
-	return &Handler{publicKey: publicKey, invoker: invoker, logger: logger}
+func NewHandler(publicKey ed25519.PublicKey, invoker WorkerInvoker, secrets SecretInputs, logger *slog.Logger) *Handler {
+	return &Handler{publicKey: publicKey, invoker: invoker, secrets: secrets, logger: logger}
 }
 
 // Handle は署名を検証したうえで、interaction の種類に応じた応答を返す。
@@ -124,7 +138,8 @@ func (h *Handler) handleCommand(ctx context.Context, in interaction) events.Lamb
 		return jsonResponse(ephemeralBody(help.Usage))
 	}
 	inv := toInvocation(in)
-	private := command.IsPrivate(inv.Options)
+	// 入力に秘密を含むコマンドは、visibility の指定によらず実行者だけに応答する（入力をほかの参加者に見せない）。
+	private := command.IsPrivate(inv.Options) || h.secrets.HasSecretInput(inv.CommandName)
 	if err := h.invoker.InvokeAsync(ctx, inv); err != nil {
 		h.logger.Error(logWorkerInvokeFailed, "command", inv.CommandName, "error", err)
 		return jsonResponse(failureBody(private))
@@ -158,6 +173,10 @@ func toInvocation(in interaction) command.Invocation {
 		Attachments:       attachments,
 		AppPermissions:    in.AppPermissions,
 		MemberPermissions: in.Member.Permissions,
+		InteractionID:     in.ID,
+		GuildID:           in.GuildID,
+		UserID:            in.Member.User.ID,
+		ChannelType:       in.Channel.Type,
 	}
 }
 

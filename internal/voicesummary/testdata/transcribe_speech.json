@@ -1,0 +1,16 @@
+{
+  "jobName": "summarize-voice-1441234567890123456-1",
+  "accountId": "123456789012",
+  "status": "COMPLETED",
+  "results": {
+    "transcripts": [
+      {"transcript": "おはようございます。今日は予定を決めましょう。"}
+    ],
+    "items": [],
+    "audio_segments": [
+      {"id": 0, "transcript": "おはようございます。", "start_time": "1.23", "end_time": "2.5", "items": []},
+      {"id": 1, "transcript": "   ", "start_time": "5.0", "end_time": "5.4", "items": []},
+      {"id": 2, "transcript": "今日は予定を決めましょう。", "start_time": "754.06", "end_time": "758.9", "items": []}
+    ]
+  }
+}

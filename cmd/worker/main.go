@@ -13,7 +13,9 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcore"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	"github.com/aws/aws-sdk-go-v2/service/transcribe"
 	awstranslate "github.com/aws/aws-sdk-go-v2/service/translate"
 
 	"discord-ai-assistant/internal/bottoken"
@@ -25,12 +27,16 @@ import (
 	"discord-ai-assistant/internal/reply"
 	"discord-ai-assistant/internal/summarize"
 	"discord-ai-assistant/internal/translate"
+	"discord-ai-assistant/internal/voicesummary"
+	"discord-ai-assistant/internal/voicesummary/craig"
 	"discord-ai-assistant/internal/websearch"
 	"discord-ai-assistant/internal/worker"
 )
 
 const (
 	envBotTokenParameter   = "BOT_TOKEN_PARAMETER_NAME"
+	envVoiceBucket         = "VOICE_BUCKET_NAME"
+	envCraigBaseURL        = "CRAIG_BASE_URL" // 結合テストが Craig の fake へ向けるために使う。本番では設定しない
 	msgConfigLoadFailed    = "config load failed"
 	msgBotTokenLoadFailed  = "bot token load failed"
 	logKeyParameter        = "parameter"
@@ -56,6 +62,13 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	bucket, err := requireEnv(envVoiceBucket)
+	if err != nil {
+		return err
+	}
+	if baseURL := os.Getenv(envCraigBaseURL); baseURL != "" {
+		cfg.SummarizeVoice.CraigBaseURL = baseURL
+	}
 	ctx := context.Background()
 	awsConfig, err := awsconfig.LoadDefaultConfig(ctx)
 	if err != nil {
@@ -77,7 +90,13 @@ func run(logger *slog.Logger) error {
 	fetcher := translate.NewHTTPAttachmentFetcher(http.DefaultClient)
 	discordBaseURL := os.Getenv(discordapi.EnvBaseURL)
 	history := summarize.NewDiscordHistoryReader(token, discordBaseURL)
-	registry := catalog.New(catalog.Dependencies{Generator: generator, ToolGenerator: generator, Searcher: searcher, Logger: logger, ImageGenerator: imageGenerator, Translator: translator, Fetcher: fetcher, History: history, BotToken: token}, cfg)
+	voice := voicesummary.Dependencies{
+		Recordings: craig.NewClient(cfg.SummarizeVoice.CraigBaseURL, http.DefaultClient),
+		Store:      voicesummary.NewS3Store(s3.NewFromConfig(awsConfig, voicesummary.ConfigureS3Client), bucket),
+		Jobs:       voicesummary.NewTranscribeJobs(transcribe.NewFromConfig(awsConfig), bucket),
+		Poster:     reply.NewDiscordChannelPoster(token, discordBaseURL),
+	}
+	registry := catalog.New(catalog.Dependencies{Generator: generator, ToolGenerator: generator, Searcher: searcher, Logger: logger, ImageGenerator: imageGenerator, Translator: translator, Fetcher: fetcher, History: history, Voice: voice, BotToken: token}, cfg)
 	responder := reply.NewDiscordResponder(discordBaseURL)
 	replyReserve := time.Duration(cfg.ReplyReserveSeconds) * time.Second
 	lambda.Start(worker.NewHandler(registry, responder, logger, replyReserve).Handle)

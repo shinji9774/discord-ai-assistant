@@ -22,9 +22,12 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"discord-ai-assistant/test/bedrockfake"
+	"discord-ai-assistant/test/craigfake"
 	"discord-ai-assistant/test/discordfake"
 	"discord-ai-assistant/test/lambdafake"
+	"discord-ai-assistant/test/s3fake"
 	"discord-ai-assistant/test/ssmfake"
+	"discord-ai-assistant/test/transcribefake"
 	"discord-ai-assistant/test/translatefake"
 	"discord-ai-assistant/test/websearchfake"
 )
@@ -43,27 +46,36 @@ const (
 	botTokenParameterName = "/discord-ai-assistant/bot-token"
 	botTokenValue         = "it-bot-token"
 	workerFunctionName    = "worker"
+	voiceBucketName       = "it-voice-bucket"
 )
 
-// rieInvocationMu は worker の RIE への呼び出しを 1 件ずつにする。
+// rieInvocationMu は RIE への呼び出し（worker と voicereporter）を 1 件ずつにする。
+// worker の処理が終わってから voicereporter を呼ぶ順序も、これで保つ。
 var rieInvocationMu sync.Mutex
 
 // 結合テスト全体で共有する、fake と RIE コンテナ。
 var (
-	discord    *discordfake.Server
-	bedrock    *bedrockfake.Server
-	translateF *translatefake.Server
-	lambdaF    *lambdafake.Server
-	ssm        *ssmfake.Server
-	webSearch  *websearchfake.Server
+	discord     *discordfake.Server
+	bedrock     *bedrockfake.Server
+	translateF  *translatefake.Server
+	lambdaF     *lambdafake.Server
+	ssm         *ssmfake.Server
+	webSearch   *websearchfake.Server
+	craigF      *craigfake.Server
+	s3F         *s3fake.Server
+	transcribeF *transcribefake.Server
+	reporterSSM *ssmfake.Server // voicereporter 用。worker の ssm の記録（ちょうど 1 件）を崩さないために分ける
 
-	workerContainer  testcontainers.Container
-	ingressContainer testcontainers.Container
-	ingressURL       string
-	workerURL        string
-	ingressPublicKey ed25519.PublicKey
-	ingressPrivate   ed25519.PrivateKey
-	discordURL       string // discordfake のコンテナから見える URL
+	workerContainer        testcontainers.Container
+	ingressContainer       testcontainers.Container
+	voiceReporterContainer testcontainers.Container
+	ingressURL             string
+	workerURL              string
+	voiceReporterURL       string
+	ingressPublicKey       ed25519.PublicKey
+	ingressPrivate         ed25519.PrivateKey
+	discordURL             string // discordfake のコンテナから見える URL
+	craigURL               string // craigfake のコンテナから見える URL。録音リンクの組み立てにも使う
 )
 
 func TestMain(m *testing.M) {
@@ -88,7 +100,11 @@ func setUp(ctx context.Context) error {
 	}
 	discord, bedrock, translateF, lambdaF, ssm = discordfake.New(), bedrockfake.New(), translatefake.New(), lambdafake.New(), ssmfake.New()
 	webSearch = websearchfake.New()
+	craigF, s3F = craigfake.New(), s3fake.New()
+	transcribeF = transcribefake.New(s3F)
 	ssm.SetParameter(botTokenParameterName, botTokenValue)
+	reporterSSM = ssmfake.New()
+	reporterSSM.SetParameter(botTokenParameterName, botTokenValue)
 
 	discordURL, err = serveFake(discord)
 	if err != nil {
@@ -115,6 +131,22 @@ func setUp(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	craigURL, err = serveFake(craigF)
+	if err != nil {
+		return err
+	}
+	s3URL, err := serveFake(s3F)
+	if err != nil {
+		return err
+	}
+	transcribeURL, err := serveFake(transcribeF)
+	if err != nil {
+		return err
+	}
+	reporterSSMURL, err := serveFake(reporterSSM)
+	if err != nil {
+		return err
+	}
 
 	workerContainer, err = startRIE(ctx, "/worker", map[string]string{
 		"BOT_TOKEN_PARAMETER_NAME":           botTokenParameterName,
@@ -123,6 +155,10 @@ func setUp(ctx context.Context) error {
 		"AWS_ENDPOINT_URL_SSM":               ssmURL,
 		"DISCORD_API_BASE_URL":               discordURL,
 		"AWS_ENDPOINT_URL_BEDROCK_AGENTCORE": webSearchURL,
+		"VOICE_BUCKET_NAME":                  voiceBucketName,
+		"AWS_ENDPOINT_URL_S3":                s3URL,
+		"AWS_ENDPOINT_URL_TRANSCRIBE":        transcribeURL,
+		"CRAIG_BASE_URL":                     craigURL,
 	})
 	if err != nil {
 		return err
@@ -142,11 +178,28 @@ func setUp(ctx context.Context) error {
 		return err
 	}
 	ingressURL, err = containerURL(ctx, ingressContainer)
+	if err != nil {
+		return err
+	}
+
+	voiceReporterContainer, err = startRIE(ctx, "/voicereporter", map[string]string{
+		"BOT_TOKEN_PARAMETER_NAME":         botTokenParameterName,
+		"VOICE_BUCKET_NAME":                voiceBucketName,
+		"AWS_ENDPOINT_URL_S3":              s3URL,
+		"AWS_ENDPOINT_URL_TRANSCRIBE":      transcribeURL,
+		"AWS_ENDPOINT_URL_BEDROCK_RUNTIME": bedrockURL,
+		"AWS_ENDPOINT_URL_SSM":             reporterSSMURL,
+		"DISCORD_API_BASE_URL":             discordURL,
+	})
+	if err != nil {
+		return err
+	}
+	voiceReporterURL, err = containerURL(ctx, voiceReporterContainer)
 	return err
 }
 
 func tearDown(ctx context.Context) {
-	for _, c := range []testcontainers.Container{ingressContainer, workerContainer} {
+	for _, c := range []testcontainers.Container{ingressContainer, workerContainer, voiceReporterContainer} {
 		if c != nil {
 			_ = testcontainers.TerminateContainer(c, testcontainers.StopContext(ctx))
 		}
@@ -217,4 +270,11 @@ func postToRIE(url string, payload []byte) {
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
+}
+
+// waitForRIEIdle は、進行中の RIE への呼び出しが終わるまで待つ。
+// worker は Discord への返信のあとにもログを出すので、ログを調べる前に呼ぶ。
+func waitForRIEIdle() {
+	rieInvocationMu.Lock()
+	defer rieInvocationMu.Unlock()
 }

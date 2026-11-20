@@ -27,6 +27,12 @@ func (r *Registry) Find(name string) (Command, bool) {
 	return c, ok
 }
 
+// HasSecretInput は、name のコマンドが SecretInput を実装しているかを返す。登録されていない名前には false。
+func (r *Registry) HasSecretInput(name string) bool {
+	_, secret := r.byName[name].(SecretInput)
+	return secret
+}
+
 // Definitions は登録した順にコマンドの定義を返す。
 func (r *Registry) Definitions() []discord.ApplicationCommandCreate {
 	definitions := make([]discord.ApplicationCommandCreate, 0, len(r.commands))

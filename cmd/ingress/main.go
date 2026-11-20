@@ -8,9 +8,11 @@ import (
 	"os"
 
 	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/aws/aws-sdk-go-v2/config"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	awslambda "github.com/aws/aws-sdk-go-v2/service/lambda"
 
+	"discord-ai-assistant/internal/catalog"
+	"discord-ai-assistant/internal/config"
 	"discord-ai-assistant/internal/ingress"
 )
 
@@ -39,14 +41,20 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("parse %s: %w", envPublicKey, err)
 	}
-	awsConfig, err := config.LoadDefaultConfig(context.Background())
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	awsConfig, err := awsconfig.LoadDefaultConfig(context.Background())
 	if err != nil {
 		return fmt.Errorf("load aws config: %w", err)
 	}
 
 	invoker := ingress.NewLambdaInvoker(awslambda.NewFromConfig(awsConfig), workerFunctionName)
+	// 秘密入力のコマンドかを答えるためだけに Registry を組む。ingress はコマンドを実行しないので、依存は空でよい。
+	secrets := catalog.New(catalog.Dependencies{}, cfg)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	lambda.Start(ingress.NewHandler(publicKey, invoker, logger).Handle)
+	lambda.Start(ingress.NewHandler(publicKey, invoker, secrets, logger).Handle)
 	return nil
 }
 
