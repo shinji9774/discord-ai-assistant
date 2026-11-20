@@ -26,28 +26,27 @@ const (
 	logKeyError     = "error"
 
 	// 失敗した段階。ログの stage に出す。
-	stageManifest   = "manifest"
-	stageStatus     = "status"
-	stageClaim      = "claim"
-	stageTranscribe = "transcribe"
-	stageRead       = "read"
-	stageSummarize  = "summarize"
-	stagePost       = "post"
-	stageDiscard    = "discard"
-)
+	stageManifest  = "manifest"
+	stageStatus    = "status"
+	stageClaim     = "claim"
+	stageRead      = "read"
+	stageSummarize = "summarize"
+	stagePost      = "post"
+	stageDiscard   = "discard"
 
-// errTranscriptionFailed は、依頼の文字起こしのジョブが 1 つ以上失敗したことを表す。
-var errTranscriptionFailed = errors.New("transcription job failed")
+	// 再試行と失敗の通知の段階（stageRetry、stageReleaseClaim は Reporter が使う）。
+	stageRetry         = "retry"
+	stageReleaseClaim  = "release claim"
+	stageNotifyFailure = "notify failure"
+)
 
 // ResultStore は、完了後の側が使う置き場。
 type ResultStore interface {
-	// ReadManifest は依頼の記録を返す。なければ ErrRequestNotFound。
-	ReadManifest(ctx context.Context, requestID string) (Manifest, error)
+	ClaimStore
 	// ReadTranscript は、1 トラックの文字起こしの結果（Transcribe の JSON）を返す。
 	ReadTranscript(ctx context.Context, requestID string, track int) ([]byte, error)
-	// ClaimReport は、投稿する権利を取る。既に取られていれば ErrReportClaimed。
-	ClaimReport(ctx context.Context, requestID string) error
-	Discard(ctx context.Context, m Manifest) error
+	// ReleaseClaim は、投稿する権利を手放す。データは消さない。
+	ReleaseClaim(ctx context.Context, requestID string) error
 }
 
 // JobStatus は、1 トラックの文字起こしのジョブの状態。
@@ -59,28 +58,43 @@ const (
 	JobFailed
 )
 
-// JobInspector は、1 トラックの文字起こしの状態を返す。
-type JobInspector interface {
-	Status(ctx context.Context, requestID string, track int) (JobStatus, error)
+// JobController は、1 トラックの文字起こしの開始と状態の取得を行う。
+type JobController interface {
+	JobStarter
+	Status(ctx context.Context, job JobRef) (JobStatus, error)
 }
+
+// transcriptionOutcome は、依頼の文字起こしの全体の状態。
+type transcriptionOutcome int
+
+const (
+	transcriptionPending transcriptionOutcome = iota
+	transcriptionCompleted
+	transcriptionFailed
+)
 
 // Reporter は、文字起こしの完了を受けて、統合・要約・投稿・削除を順に行う。
 type Reporter struct {
-	store  ResultStore
-	jobs   JobInspector
-	gen    llm.TextGenerator
-	poster reply.ChannelPoster
-	cfg    Config
-	logger *slog.Logger
+	store    ResultStore
+	jobs     JobController
+	gen      llm.TextGenerator
+	poster   reply.ChannelPoster
+	failures *FailureNotifier
+	cfg      Config
+	logger   *slog.Logger
 }
 
-func NewReporter(store ResultStore, jobs JobInspector, gen llm.TextGenerator,
+func NewReporter(store ResultStore, jobs JobController, gen llm.TextGenerator,
 	poster reply.ChannelPoster, cfg Config, logger *slog.Logger) *Reporter {
-	return &Reporter{store: store, jobs: jobs, gen: gen, poster: poster, cfg: cfg, logger: logger}
+	return &Reporter{
+		store: store, jobs: jobs, gen: gen, poster: poster,
+		failures: NewFailureNotifier(store, poster, logger), cfg: cfg, logger: logger,
+	}
 }
 
 // Report は、jobName のジョブが属する依頼を進める。
-// 全トラックのジョブが終わり、投稿する権利を取れた実行だけが、結果（作れなければ失敗）を 1 回投稿して依頼のデータを消す。
+// 失敗したトラックは 1 回だけ開き直し、全トラックが終わって投稿する権利を取れた実行だけが、結果（やり直しも失敗なら失敗）を 1 回投稿して依頼のデータを消す。
+// 結果を作れない、または Discord が投稿を断ったときは、権利を手放してエラーを返し、Lambda の再試行に任せる。
 // この機能のジョブでない、依頼の記録が無い、終わっていないジョブがある、ほかの実行が担当している場合は、何もせず nil を返す。
 func (r *Reporter) Report(ctx context.Context, jobName string) error {
 	requestID, ok := requestIDOf(jobName)
@@ -94,60 +108,110 @@ func (r *Reporter) Report(ctx context.Context, jobName string) error {
 	if err != nil {
 		return r.fail(requestID, stageManifest, fmt.Errorf("read manifest: %w", err))
 	}
-	statuses, err := r.statuses(ctx, m)
-	if err != nil {
-		return r.fail(requestID, stageStatus, err)
+	outcome, err := r.transcriptionOutcome(ctx, m)
+	if err != nil || outcome == transcriptionPending {
+		return err
 	}
-	if slices.Contains(statuses, JobPending) {
-		return nil
-	}
-	err = r.store.ClaimReport(ctx, requestID)
+	err = r.store.ClaimReport(ctx, m.RequestID)
 	if errors.Is(err, ErrReportClaimed) {
 		return nil
 	}
 	if err != nil {
-		return r.fail(requestID, stageClaim, fmt.Errorf("claim report: %w", err))
+		return r.fail(m.RequestID, stageClaim, fmt.Errorf("claim report: %w", err))
 	}
-	return r.deliver(ctx, m, slices.Contains(statuses, JobFailed))
+	if outcome == transcriptionFailed {
+		r.failures.notifyFailure(ctx, m)
+		return nil
+	}
+	return r.deliver(ctx, m)
 }
 
-// statuses は、依頼の全話者のジョブの状態を、マニフェストの話者の順に返す。
-func (r *Reporter) statuses(ctx context.Context, m Manifest) ([]JobStatus, error) {
-	statuses := make([]JobStatus, 0, len(m.Speakers))
-	for _, s := range m.Speakers {
-		status, err := r.jobs.Status(ctx, m.RequestID, s.Track)
+// transcriptionOutcome は、全トラックの状態をまとめる。待つトラックがあれば Pending、
+// 失敗（最終）のトラックがあれば Failed、それ以外は Completed。
+func (r *Reporter) transcriptionOutcome(ctx context.Context, m Manifest) (transcriptionOutcome, error) {
+	outcomes := make([]transcriptionOutcome, 0, len(m.Speakers))
+	for _, speaker := range m.Speakers {
+		outcome, err := r.trackOutcome(ctx, m.RequestID, speaker.Track)
 		if err != nil {
-			return nil, fmt.Errorf("status of track %d: %w", s.Track, err)
+			return transcriptionPending, err
 		}
-		statuses = append(statuses, status)
+		outcomes = append(outcomes, outcome)
 	}
-	return statuses, nil
+	if slices.Contains(outcomes, transcriptionPending) {
+		return transcriptionPending, nil
+	}
+	if slices.Contains(outcomes, transcriptionFailed) {
+		return transcriptionFailed, nil
+	}
+	return transcriptionCompleted, nil
 }
 
-// deliver は、結果を作って 1 回だけ投稿し、依頼のデータを消す。結果を作れなければ失敗を投稿する。
-// どの段階の失敗もログに出し、まとめて返す。
-func (r *Reporter) deliver(ctx context.Context, m Manifest, anyJobFailed bool) error {
-	result, stage, buildErr := r.buildResult(ctx, m, anyJobFailed)
-	if buildErr != nil {
-		r.logFailure(m.RequestID, stage, buildErr)
-		result = command.Result{Text: command.FailureMessage}
+// trackOutcome は、1 トラックの状態を返す。試行 1 が失敗していれば、試行 2 を見る。
+func (r *Reporter) trackOutcome(ctx context.Context, requestID string, track int) (transcriptionOutcome, error) {
+	status, err := r.jobs.Status(ctx, JobRef{RequestID: requestID, Track: track, Attempt: firstAttempt})
+	if err != nil {
+		return transcriptionPending, r.fail(requestID, stageStatus, fmt.Errorf("status of track %d: %w", track, err))
 	}
-	var postErr, discardErr error
-	if err := r.poster.Post(ctx, requesterPost(m, result)); err != nil {
-		postErr = r.fail(m.RequestID, stagePost, fmt.Errorf("post report: %w", err))
+	switch status {
+	case JobCompleted:
+		return transcriptionCompleted, nil
+	case JobPending:
+		return transcriptionPending, nil
 	}
-	if err := r.store.Discard(ctx, m); err != nil {
-		discardErr = r.fail(m.RequestID, stageDiscard, fmt.Errorf("discard request: %w", err))
+	return r.retryOutcome(ctx, JobRef{RequestID: requestID, Track: track, Attempt: retryAttempt})
+}
+
+// retryOutcome は、開き直したジョブの状態を返す。終わっていなければ開始する（既にあれば何もしない）。
+func (r *Reporter) retryOutcome(ctx context.Context, retry JobRef) (transcriptionOutcome, error) {
+	status, err := r.jobs.Status(ctx, retry)
+	if err != nil {
+		return transcriptionPending, r.fail(retry.RequestID, stageStatus, fmt.Errorf("status of track %d retry: %w", retry.Track, err))
 	}
-	return errors.Join(buildErr, postErr, discardErr)
+	switch status {
+	case JobCompleted:
+		return transcriptionCompleted, nil
+	case JobFailed:
+		return transcriptionFailed, nil
+	}
+	if err := r.jobs.Start(ctx, retry); err != nil {
+		return transcriptionPending, r.fail(retry.RequestID, stageRetry, fmt.Errorf("start retry of track %d: %w", retry.Track, err))
+	}
+	return transcriptionPending, nil
+}
+
+// deliver は、結果を投稿してデータを消す。やり直せる失敗では claim を手放してエラーを返す。
+func (r *Reporter) deliver(ctx context.Context, m Manifest) error {
+	result, stage, err := r.buildResult(ctx, m)
+	if err != nil {
+		return r.retryLater(ctx, m, stage, err)
+	}
+	err = r.poster.Post(ctx, requesterPost(m, result))
+	if errors.Is(err, reply.ErrPostRejected) {
+		return r.retryLater(ctx, m, stagePost, fmt.Errorf("post report: %w", err))
+	}
+	if err != nil {
+		// 投稿されたか分からない。重複を避けるため、やり直さない。
+		r.logFailure(m.RequestID, stagePost, fmt.Errorf("post report: %w", err))
+	}
+	r.failures.discard(ctx, m)
+	return nil
+}
+
+// retryLater は、claim を手放してエラーを返し、Lambda の再試行に任せる。データは残す。
+// 呼び出し元の期限が切れていても手放せるよう、期限を取り直す。
+func (r *Reporter) retryLater(ctx context.Context, m Manifest, stage string, cause error) error {
+	err := r.fail(m.RequestID, stage, cause)
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+	defer cancel()
+	if releaseErr := r.store.ReleaseClaim(releaseCtx, m.RequestID); releaseErr != nil {
+		return errors.Join(err, r.fail(m.RequestID, stageReleaseClaim, fmt.Errorf("release claim: %w", releaseErr)))
+	}
+	return err
 }
 
 // buildResult は、投稿する結果を作る。作れなければ、失敗した段階とエラーを返す。
-// 失敗したジョブがあれば、残りの結果を使わない。発話が 1 つも無ければ、要約せずに「発話なし」にする。
-func (r *Reporter) buildResult(ctx context.Context, m Manifest, anyJobFailed bool) (command.Result, string, error) {
-	if anyJobFailed {
-		return command.Result{}, stageTranscribe, errTranscriptionFailed
-	}
+// 発話が 1 つも無ければ、要約せずに「発話なし」にする。
+func (r *Reporter) buildResult(ctx context.Context, m Manifest) (command.Result, string, error) {
 	utterances, err := r.readUtterances(ctx, m)
 	if err != nil {
 		return command.Result{}, stageRead, err
@@ -194,9 +258,14 @@ func (r *Reporter) fail(requestID, stage string, err error) error {
 	return err
 }
 
-// logFailure は、コマンド名、依頼 ID、失敗した段階、原因をログに出す。
+// logFailure は、Reporter の失敗を logFailure（package 関数）でログに出す。
 func (r *Reporter) logFailure(requestID, stage string, err error) {
-	r.logger.Error(reportFailedMessage,
+	logFailure(r.logger, requestID, stage, err)
+}
+
+// logFailure は、コマンド名、依頼 ID、失敗した段階、原因をログに出す。
+func logFailure(logger *slog.Logger, requestID, stage string, err error) {
+	logger.Error(reportFailedMessage,
 		slog.String(logKeyCommand, CommandName),
 		slog.String(logKeyRequestID, requestID),
 		slog.String(logKeyStage, stage),

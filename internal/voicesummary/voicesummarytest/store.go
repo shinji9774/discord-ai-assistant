@@ -102,6 +102,12 @@ func (s *Store) ClaimReport(_ context.Context, requestID string) error {
 	return nil
 }
 
+// ReleaseClaim は、claim だけを消す。
+func (s *Store) ReleaseClaim(_ context.Context, requestID string) error {
+	delete(s.claims, requestID)
+	return nil
+}
+
 // Discard は、依頼のマニフェスト、音声、文字起こしを消す。claim は残す（イベントが再配送されても二度投稿しないため）。
 func (s *Store) Discard(_ context.Context, m voicesummary.Manifest) error {
 	if s.DiscardErr != nil {

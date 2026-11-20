@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"reflect"
 	"strings"
@@ -22,7 +23,7 @@ import (
 
 const (
 	// reportJobName は、はなこ（トラック 2）のジョブの名前。完了のイベントがこの名前で届く。
-	reportJobName = "summarize-voice-1441234567890123456-2"
+	reportJobName = "summarize-voice-1441234567890123456-2-1"
 	// reportSummary は、モデルが返す要約。ログに出ないことを確かめるため 1 行にする。
 	reportSummary = "予算は来週までに確定する"
 )
@@ -88,9 +89,9 @@ func newReporterScenario(t *testing.T) *reporterScenario {
 	store.PutTranscript(requestID, 2, transcribeResultJSON(t,
 		segmentJSON{StartTime: "3.25", EndTime: "5.0", Transcript: "よろしくお願いします"},
 	))
-	jobs := &voicesummarytest.Jobs{Statuses: map[voicesummarytest.Job]voicesummary.JobStatus{
-		{RequestID: requestID, Track: 1}: voicesummary.JobCompleted,
-		{RequestID: requestID, Track: 2}: voicesummary.JobCompleted,
+	jobs := &voicesummarytest.Jobs{Statuses: map[voicesummary.JobRef]voicesummary.JobStatus{
+		{RequestID: requestID, Track: 1, Attempt: 1}: voicesummary.JobCompleted,
+		{RequestID: requestID, Track: 2, Attempt: 1}: voicesummary.JobCompleted,
 	}}
 	return &reporterScenario{
 		store:  store,
@@ -125,8 +126,14 @@ func failureLog(stage string) reportLog {
 
 func (s *reporterScenario) parsedLogs(t *testing.T) []reportLog {
 	t.Helper()
-	var logs []reportLog
-	for line := range strings.Lines(s.logs.String()) {
+	return parseReportLogs(t, s.logs)
+}
+
+// parseReportLogs は、logs に出た JSON のログを 1 行ずつ reportLog にする。
+func parseReportLogs(t *testing.T, logs *bytes.Buffer) []reportLog {
+	t.Helper()
+	var parsed []reportLog
+	for line := range strings.Lines(logs.String()) {
 		var entry struct {
 			Level     string `json:"level"`
 			Msg       string `json:"msg"`
@@ -138,18 +145,19 @@ func (s *reporterScenario) parsedLogs(t *testing.T) []reportLog {
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			t.Fatalf("unmarshal log %q: %v", line, err)
 		}
-		logs = append(logs, reportLog{
+		parsed = append(parsed, reportLog{
 			Level: entry.Level, Msg: entry.Msg, Command: entry.Command,
 			RequestID: entry.RequestID, Stage: entry.Stage, HasError: entry.Error != "",
 		})
 	}
-	return logs
+	return parsed
 }
 
 // reporterOutcome は、Report の終わり方と、置き場・モデル・投稿・ログに残ったもの。
 type reporterOutcome struct {
 	Failed   bool // Report がエラーを返したか
 	Keys     []string
+	Started  []voicesummary.JobRef
 	Requests []llm.Request
 	Posts    []reply.ChannelPost
 	Logs     []reportLog
@@ -161,6 +169,7 @@ func (s *reporterScenario) verify(t *testing.T, err error, want reporterOutcome)
 	got := reporterOutcome{
 		Failed:   err != nil,
 		Keys:     s.store.Keys(),
+		Started:  s.jobs.Started,
 		Requests: s.gen.Requests,
 		Posts:    s.poster.Posts,
 		Logs:     s.parsedLogs(t),
@@ -253,17 +262,17 @@ func TestReport_NotReadyOrNotMine_DoesNothing(t *testing.T) {
 		wantKeys []string
 	}{
 		{"other job in progress", func(_ *testing.T, s *reporterScenario) {
-			s.jobs.Statuses[voicesummarytest.Job{RequestID: requestID, Track: 1}] = voicesummary.JobPending
+			s.jobs.Statuses[voicesummary.JobRef{RequestID: requestID, Track: 1, Attempt: 1}] = voicesummary.JobPending
 		}, reportJobName, acceptedRequestKeys()},
 		{"other job not started", func(_ *testing.T, s *reporterScenario) {
-			delete(s.jobs.Statuses, voicesummarytest.Job{RequestID: requestID, Track: 1})
+			delete(s.jobs.Statuses, voicesummary.JobRef{RequestID: requestID, Track: 1, Attempt: 1})
 		}, reportJobName, acceptedRequestKeys()},
 		{"already claimed by another run", func(t *testing.T, s *reporterScenario) {
 			if err := s.store.ClaimReport(context.Background(), requestID); err != nil {
 				t.Fatalf("ClaimReport: %v", err)
 			}
 		}, reportJobName, claimedRequestKeys()},
-		{"request not found", func(*testing.T, *reporterScenario) {}, "summarize-voice-1449999999999999999-1", acceptedRequestKeys()},
+		{"request not found", func(*testing.T, *reporterScenario) {}, "summarize-voice-1449999999999999999-1-1", acceptedRequestKeys()},
 		{"job of another feature", func(*testing.T, *reporterScenario) {}, "other-feature-job-1", acceptedRequestKeys()},
 	}
 	for _, tt := range tests {
@@ -290,22 +299,69 @@ func TestReport_NoUtterances_PostsNoSpeechReportAndDiscards(t *testing.T) {
 	s.verify(t, err, reporterOutcome{Keys: reportedRequestKeys(), Posts: []reply.ChannelPost{noSpeechPost(acceptedManifest())}})
 }
 
-// 条件: 投稿の権利を取ったあとで、文字起こしのジョブの失敗、結果の読み取りの失敗、結果の形の誤り、要約の失敗のいずれかが起きる。
-// 内容: 失敗を依頼者に通知して投稿し、依頼のデータを消して（claim は残す）、エラーを返す。失敗した段階をログに出す。
-func TestReport_ResultCannotBeBuilt_PostsFailureAndDiscards(t *testing.T) {
-	errInjected := errors.New("injected failure")
+// 条件: トラック 1 の試行 1 が FAILED、トラック 2 は COMPLETED。
+// 内容: トラック 1 の試行 2 を開始し、投稿せず、claim を作らずに nil を返す。
+func TestReport_FirstAttemptFailed_StartsRetryAndWaits(t *testing.T) {
+	s := newReporterScenario(t)
+	s.jobs.Statuses[voicesummary.JobRef{RequestID: requestID, Track: 1, Attempt: voicesummary.FirstAttempt}] = voicesummary.JobFailed
+
+	err := s.report(reportJobName)
+
+	s.verify(t, err, reporterOutcome{
+		Keys:    acceptedRequestKeys(),
+		Started: []voicesummary.JobRef{{RequestID: requestID, Track: 1, Attempt: voicesummary.RetryAttempt}},
+	})
+}
+
+// 条件: トラック 1 の試行 1 が FAILED で試行 2 が COMPLETED、トラック 2 は COMPLETED。
+// 内容: 全トラックが完了したときと同じ要約を 1 回投稿し、データを消す。
+func TestReport_RetryCompleted_PostsSummaryAndDiscards(t *testing.T) {
+	s := newReporterScenario(t)
+	s.jobs.Statuses[voicesummary.JobRef{RequestID: requestID, Track: 1, Attempt: voicesummary.FirstAttempt}] = voicesummary.JobFailed
+	s.jobs.Statuses[voicesummary.JobRef{RequestID: requestID, Track: 1, Attempt: voicesummary.RetryAttempt}] = voicesummary.JobCompleted
+
+	err := s.report(reportJobName)
+
+	s.verify(t, err, reporterOutcome{Keys: reportedRequestKeys(), Requests: []llm.Request{summaryRequest()}, Posts: []reply.ChannelPost{summaryPost()}})
+}
+
+// 条件: トラック 1 の試行 1 と試行 2 がどちらも FAILED。
+// 内容: 結果を読まずに、依頼者への通知つきで失敗を投稿し、データを消す。
+func TestReport_RetryFailed_PostsFailureAndDiscards(t *testing.T) {
+	s := newReporterScenario(t)
+	s.jobs.Statuses[voicesummary.JobRef{RequestID: requestID, Track: 1, Attempt: voicesummary.FirstAttempt}] = voicesummary.JobFailed
+	s.jobs.Statuses[voicesummary.JobRef{RequestID: requestID, Track: 1, Attempt: voicesummary.RetryAttempt}] = voicesummary.JobFailed
+
+	err := s.report(reportJobName)
+
+	s.verify(t, err, reporterOutcome{Keys: reportedRequestKeys(), Posts: []reply.ChannelPost{failurePost()}})
+}
+
+// 条件: 全トラックが完了し、要約に失敗する。
+// 内容: エラーを返し、投稿せず、claim を消してデータを残す。
+func TestReport_SummaryFails_ReleasesClaimAndKeepsData(t *testing.T) {
+	s := newReporterScenario(t)
+	s.gen.Err = errors.New("injected failure")
+
+	err := s.report(reportJobName)
+
+	s.verify(t, err, reporterOutcome{
+		Failed:   true,
+		Keys:     acceptedRequestKeys(),
+		Requests: []llm.Request{summaryRequest()},
+		Logs:     []reportLog{failureLog("summarize")},
+	})
+}
+
+// 条件: 全トラックが完了し、結果の読み取りの失敗、または結果の形の誤りが起きる。
+// 内容: エラーを返し、投稿せず、claim を消してデータを残す。失敗した段階をログに出す。
+func TestReport_ResultCannotBeRead_ReleasesClaimAndKeepsData(t *testing.T) {
 	tests := []struct {
-		name         string
-		arrange      func(s *reporterScenario)
-		wantRequests []llm.Request
-		wantStage    string
+		name    string
+		arrange func(s *reporterScenario)
 	}{
-		{"a transcription job failed", func(s *reporterScenario) {
-			s.jobs.Statuses[voicesummarytest.Job{RequestID: requestID, Track: 1}] = voicesummary.JobFailed
-		}, nil, "transcribe"},
-		{"reading transcript fails", func(s *reporterScenario) { s.store.ReadTranscriptErr = errInjected }, nil, "read"},
-		{"transcript is not json", func(s *reporterScenario) { s.store.PutTranscript(requestID, 2, []byte("{")) }, nil, "read"},
-		{"summary fails", func(s *reporterScenario) { s.gen.Err = errInjected }, []llm.Request{summaryRequest()}, "summarize"},
+		{"reading transcript fails", func(s *reporterScenario) { s.store.ReadTranscriptErr = errors.New("injected failure") }},
+		{"transcript is not json", func(s *reporterScenario) { s.store.PutTranscript(requestID, 2, []byte("{")) }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -314,46 +370,83 @@ func TestReport_ResultCannotBeBuilt_PostsFailureAndDiscards(t *testing.T) {
 
 			err := s.report(reportJobName)
 
-			s.verify(t, err, reporterOutcome{
-				Failed:   true,
-				Keys:     reportedRequestKeys(),
-				Requests: tt.wantRequests,
-				Posts:    []reply.ChannelPost{failurePost()},
-				Logs:     []reportLog{failureLog(tt.wantStage)},
-			})
+			s.verify(t, err, reporterOutcome{Failed: true, Keys: acceptedRequestKeys(), Logs: []reportLog{failureLog("read")}})
 		})
 	}
 }
 
-// 条件: 結果は作れたが、投稿または依頼のデータの削除が失敗する。
-// 内容: 投稿の失敗でも削除は試み、どちらもエラーを返して失敗した段階をログに出す。削除に失敗した依頼は claim ごと残る（再試行では何もしない）。
-func TestReport_DeliveryFails_LogsStageAndReturnsError(t *testing.T) {
-	errInjected := errors.New("injected failure")
-	tests := []struct {
-		name      string
-		arrange   func(s *reporterScenario)
-		wantKeys  []string
-		wantStage string
-	}{
-		{"post fails", func(s *reporterScenario) { s.poster.Errs = []error{errInjected} }, reportedRequestKeys(), "post"},
-		{"discard fails", func(s *reporterScenario) { s.store.DiscardErr = errInjected }, claimedRequestKeys(), "discard"},
+// 条件: 1 回目の呼び出しで要約に失敗し、Lambda の再試行で要約が成功する。
+// 内容: 2 回目で要約を 1 回だけ投稿し、データを消す。
+func TestReport_RetriedAfterSummaryFailure_PostsSummaryOnce(t *testing.T) {
+	s := newReporterScenario(t)
+	s.gen.Err = errors.New("injected failure")
+	if err := s.report(reportJobName); err == nil {
+		t.Fatal("first Report = nil; want error")
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := newReporterScenario(t)
-			tt.arrange(s)
+	s.gen.Err = nil
 
-			err := s.report(reportJobName)
+	err := s.report(reportJobName)
 
-			s.verify(t, err, reporterOutcome{
-				Failed:   true,
-				Keys:     tt.wantKeys,
-				Requests: []llm.Request{summaryRequest()},
-				Posts:    []reply.ChannelPost{summaryPost()},
-				Logs:     []reportLog{failureLog(tt.wantStage)},
-			})
-		})
+	s.verify(t, err, reporterOutcome{
+		Keys:     reportedRequestKeys(),
+		Requests: []llm.Request{summaryRequest(), summaryRequest()},
+		Posts:    []reply.ChannelPost{summaryPost()},
+		Logs:     []reportLog{failureLog("summarize")},
+	})
+}
+
+// 条件: 全トラックが完了し、Discord が投稿を断る（ErrPostRejected）。そのあと Lambda の再試行で呼ばれる。
+// 内容: 1 回目はエラーを返して claim を消しデータを残し、2 回目で 1 回だけ投稿する。
+func TestReport_DiscordRejectsThenRetried_PostsOnce(t *testing.T) {
+	s := newReporterScenario(t)
+	s.poster.Errs = []error{fmt.Errorf("post rejected: %w", reply.ErrPostRejected)}
+	if err := s.report(reportJobName); err == nil {
+		t.Fatal("first Report = nil; want error")
 	}
+
+	err := s.report(reportJobName)
+
+	s.verify(t, err, reporterOutcome{
+		Keys:     reportedRequestKeys(),
+		Requests: []llm.Request{summaryRequest(), summaryRequest()},
+		Posts:    []reply.ChannelPost{summaryPost(), summaryPost()},
+		Logs:     []reportLog{failureLog("post")},
+	})
+}
+
+// 条件: 全トラックが完了し、投稿が通信の失敗で終わる（投稿されたか分からない）。もう一度呼ばれる。
+// 内容: どちらも nil を返し、ログを出し、データを消す。2 回目は何もしない。
+func TestReport_PostConnectionFailsThenCalledAgain_DoesNotRetryPost(t *testing.T) {
+	s := newReporterScenario(t)
+	s.poster.Errs = []error{errors.New("connection reset")}
+	if err := s.report(reportJobName); err != nil {
+		t.Fatalf("first Report = %v; want nil", err)
+	}
+
+	err := s.report(reportJobName)
+
+	s.verify(t, err, reporterOutcome{
+		Keys:     reportedRequestKeys(),
+		Requests: []llm.Request{summaryRequest()},
+		Posts:    []reply.ChannelPost{summaryPost()},
+		Logs:     []reportLog{failureLog("post")},
+	})
+}
+
+// 条件: 結果は作れて投稿も終わったが、依頼のデータの削除が失敗する。
+// 内容: ログを出して nil を返す。削除に失敗した依頼は claim ごと残る。
+func TestReport_DiscardFails_LogsStageAndReturnsNil(t *testing.T) {
+	s := newReporterScenario(t)
+	s.store.DiscardErr = errors.New("injected failure")
+
+	err := s.report(reportJobName)
+
+	s.verify(t, err, reporterOutcome{
+		Keys:     claimedRequestKeys(),
+		Requests: []llm.Request{summaryRequest()},
+		Posts:    []reply.ChannelPost{summaryPost()},
+		Logs:     []reportLog{failureLog("discard")},
+	})
 }
 
 // 条件: 投稿の権利を取る前に、依頼の記録の読み取り、またはジョブの状態の取得が失敗する。

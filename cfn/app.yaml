@@ -33,6 +33,12 @@ Resources:
       LogGroupName: !Sub /aws/lambda/${AWS::StackName}-voicereporter
       RetentionInDays: 30
 
+  VoiceFailureLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-voicefailure
+      RetentionInDays: 30
+
   # /summarize-voice の音声と途中結果の一時的な置き場。公開しない。バケットポリシーとバージョニングは使わない
   VoiceBucket:
     Type: AWS::S3::Bucket
@@ -186,6 +192,56 @@ Resources:
                 Effect: Allow
                 Action: ssm:GetParameter
                 Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${BotTokenParameterName}
+              - Sid: RetryTranscription
+                Effect: Allow
+                Action: transcribe:StartTranscriptionJob
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    transcribe:OutputBucketName: !Ref VoiceBucket
+              - Sid: InvokeFailureDestination
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt VoiceFailureFunction.Arn
+
+  VoiceFailureRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service: lambda.amazonaws.com
+      Policies:
+        - PolicyName: voicefailure
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: WriteOwnLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt VoiceFailureLogGroup.Arn
+              # 失敗の通知の重複を防ぐ report.claim を作り、依頼のデータを消す
+              - Sid: StoreVoiceData
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                Resource: !Sub ${VoiceBucket.Arn}/*
+              # ないオブジェクトを 403 ではなく 404 として受け取るために要る
+              - Sid: ListVoiceData
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt VoiceBucket.Arn
+              - Sid: ReadBotToken
+                Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${BotTokenParameterName}
 
   IngressFunction:
     Type: AWS::Lambda::Function
@@ -280,6 +336,38 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: events.amazonaws.com
       SourceArn: !GetAtt VoiceTranscriptionFinishedRule.Arn
+
+  # voicereporter の失敗は、同じイベントで 2 回までやり直す。使い切ったら voicefailure が失敗を投稿する
+  # 経過時間の上限は、再試行の間隔と実行時間を収め、S3 のライフサイクル（1 日）より十分に短くする
+  VoiceReporterEventInvokeConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref VoiceReporterFunction
+      Qualifier: $LATEST
+      MaximumRetryAttempts: 2
+      MaximumEventAgeInSeconds: 3600
+      DestinationConfig:
+        OnFailure:
+          Destination: !GetAtt VoiceFailureFunction.Arn
+
+  VoiceFailureFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: VoiceFailureLogGroup
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-voicefailure
+      PackageType: Image
+      Code:
+        ImageUri: !Ref ImageUri
+      ImageConfig:
+        EntryPoint: ["/voicefailure"]
+      Architectures: [x86_64]
+      Timeout: 60
+      MemorySize: 256
+      Role: !GetAtt VoiceFailureRole.Arn
+      Environment:
+        Variables:
+          BOT_TOKEN_PARAMETER_NAME: !Ref BotTokenParameterName
+          VOICE_BUCKET_NAME: !Ref VoiceBucket
 
   IngressFunctionUrl:
     Type: AWS::Lambda::Url

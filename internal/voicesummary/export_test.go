@@ -5,6 +5,9 @@ var (
 	JobName     = jobName
 	RequestIDOf = requestIDOf
 
+	FirstAttempt = firstAttempt
+	RetryAttempt = retryAttempt
+
 	ErrTrackMissing = errTrackMissing
 
 	MissingPostPermissions = missingPostPermissions
@@ -19,4 +22,9 @@ var (
 var (
 	FormatReport         = formatReport
 	FormatNoSpeechReport = formatNoSpeechReport
+)
+
+const (
+	CraigDeletedNotice      = craigDeletedNotice
+	CraigDeleteFailedNotice = craigDeleteFailedNotice
 )

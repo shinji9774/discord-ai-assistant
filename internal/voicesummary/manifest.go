@@ -11,10 +11,16 @@ import (
 // JobNamePrefix は、この機能の Transcribe のジョブ名の接頭辞。cfn/app.yaml のイベントルールと一致させる。
 const JobNamePrefix = "summarize-voice-"
 
+// 文字起こしの試行番号。初回のジョブが FAILED のとき、1 回だけ開き直す。
 const (
-	jobNameFormat  = JobNamePrefix + "%s-%d"
-	trackSeparator = "-"
-	decimalBase    = 10
+	firstAttempt = 1
+	retryAttempt = 2
+)
+
+const (
+	jobNameFormat    = JobNamePrefix + "%s-%d-%d"
+	jobNameSeparator = "-"
+	decimalBase      = 10
 )
 
 // 依頼の置き場（AudioStore / ResultStore）が返すエラー。
@@ -40,26 +46,42 @@ type Speaker struct {
 	Name  string `json:"name"`
 }
 
-// jobName は "summarize-voice-{依頼 ID}-{トラック番号}" を返す。
-func jobName(requestID string, track int) string {
-	return fmt.Sprintf(jobNameFormat, requestID, track)
+// JobRef は、1 トラックの文字起こしのジョブを指す。
+type JobRef struct {
+	RequestID string
+	Track     int
+	Attempt   int
+}
+
+// jobName は "summarize-voice-{依頼 ID}-{トラック番号}-{試行番号}" を返す。
+func jobName(job JobRef) string {
+	return fmt.Sprintf(jobNameFormat, job.RequestID, job.Track, job.Attempt)
 }
 
 // requestIDOf は、ジョブ名から依頼 ID を取り出す。この機能のジョブ名でなければ ok は false。
-func requestIDOf(name string) (requestID string, ok bool) {
-	rest, ok := strings.CutPrefix(name, JobNamePrefix)
+func requestIDOf(jobName string) (string, bool) {
+	rest, ok := strings.CutPrefix(jobName, JobNamePrefix)
 	if !ok {
 		return "", false
 	}
-	i := strings.LastIndex(rest, trackSeparator)
-	if i < 0 {
+	withoutAttempt, ok := cutDecimalSuffix(rest)
+	if !ok {
 		return "", false
 	}
-	requestID, track := rest[:i], rest[i+len(trackSeparator):]
-	if requestID == "" || !isDecimal(track) {
+	requestID, ok := cutDecimalSuffix(withoutAttempt)
+	if !ok || requestID == "" {
 		return "", false
 	}
 	return requestID, true
+}
+
+// cutDecimalSuffix は、末尾の "-{数字}" を取り除く。
+func cutDecimalSuffix(s string) (string, bool) {
+	i := strings.LastIndex(s, jobNameSeparator)
+	if i < 0 || !isDecimal(s[i+len(jobNameSeparator):]) {
+		return "", false
+	}
+	return s[:i], true
 }
 
 // isDecimal は s が符号のない 10 進の数字だけからなるかを返す。

@@ -11,7 +11,7 @@ FROM alpine:3.24 AS runtime-base
 
 # 結合テスト専用。Lambda Runtime Interface Emulator を足す
 FROM runtime-base AS it
-COPY --from=build /out/ingress /out/worker /out/register /out/voicereporter /
+COPY --from=build /out/ingress /out/worker /out/register /out/voicereporter /out/voicefailure /
 COPY --from=public.ecr.aws/lambda/provided:al2023 /usr/local/bin/aws-lambda-rie /usr/local/bin/aws-lambda-rie
 
 # discordコマンドの登録専用
@@ -21,4 +21,4 @@ ENTRYPOINT ["/register"]
 
 # 本番。最後のステージなので、--target なしの docker build はこれを作る
 FROM runtime-base AS runtime
-COPY --from=build /out/ingress /out/worker /out/voicereporter /
+COPY --from=build /out/ingress /out/worker /out/voicereporter /out/voicefailure /

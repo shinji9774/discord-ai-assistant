@@ -2,6 +2,8 @@ package reply_test
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
@@ -127,5 +129,47 @@ func TestPost_DiscordFails_ReturnsStatusAndCodeWithoutBody(t *testing.T) {
 	want := "discord rejected the channel message: status 500, code 0: rejected by fake"
 	if err == nil || err.Error() != want {
 		t.Errorf("Post() error = %v, want %q", err, want)
+	}
+}
+
+// rejectingDiscordURL は、チャンネルへの投稿を 403 で断る fake の URL を返す。
+func rejectingDiscordURL(t *testing.T) string {
+	t.Helper()
+	fake := discordfake.New()
+	fake.FailWith(http.StatusForbidden)
+	srv := httptest.NewServer(fake)
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// closedServerURL は、すでに閉じたサーバの URL（接続できない）を返す。
+func closedServerURL(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.NotFoundHandler())
+	srv.Close()
+	return srv.URL
+}
+
+// 条件: Discord がエラーの応答を返す場合と、Discord に届かない場合。
+// 内容: 前者だけを ErrPostRejected として見分けられる（後者は投稿されたか分からない）。
+func TestDiscordChannelPosterPost_Failure_ReportsRejectionOnlyWhenDiscordResponds(t *testing.T) {
+	tests := []struct {
+		name         string
+		apiBaseURL   func(t *testing.T) string
+		wantRejected bool
+	}{
+		{"Discord が断る", rejectingDiscordURL, true},
+		{"Discord に届かない", closedServerURL, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			poster := reply.NewDiscordChannelPoster(testBotToken, tt.apiBaseURL(t))
+
+			err := poster.Post(t.Context(), postTo(command.Result{Text: "要約です"}))
+
+			if got := errors.Is(err, reply.ErrPostRejected); err == nil || got != tt.wantRejected {
+				t.Errorf("Post() = %v, Is(ErrPostRejected) = %v; want error, %v", err, got, tt.wantRejected)
+			}
+		})
 	}
 }

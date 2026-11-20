@@ -15,6 +15,7 @@ var ErrNotRecordingLink = errors.New("not a craig recording link")
 const (
 	recordingPathPrefix = "/rec/"
 	keyQueryName        = "key"
+	deleteQueryName     = "delete"
 )
 
 // recordingIDPattern は Craig の録音 ID（英数字 10〜12 文字）。
@@ -24,6 +25,7 @@ var recordingIDPattern = regexp.MustCompile(`^[A-Za-z0-9]{10,12}$`)
 type Link struct {
 	RecordingID string
 	Key         string
+	DeleteKey   string // 削除用のリンクのときだけ入る
 }
 
 // ParseLink は、raw が baseURL の録音リンクであれば Link を返す。
@@ -41,9 +43,10 @@ func ParseLink(raw string, baseURL string) (Link, error) {
 	if !ok || !recordingIDPattern.MatchString(id) {
 		return Link{}, ErrNotRecordingLink
 	}
-	key := link.Query().Get(keyQueryName)
+	query := link.Query()
+	key := query.Get(keyQueryName)
 	if key == "" {
 		return Link{}, ErrNotRecordingLink
 	}
-	return Link{RecordingID: id, Key: key}, nil
+	return Link{RecordingID: id, Key: key, DeleteKey: query.Get(deleteQueryName)}, nil
 }

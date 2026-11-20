@@ -140,6 +140,25 @@ func TestS3StoreClaimReport_Twice_SecondReturnsErrReportClaimed(t *testing.T) {
 	}
 }
 
+// 条件: claim を取った依頼。
+// 内容: claim だけが消え、もう一度 ClaimReport できる。
+func TestS3StoreReleaseClaim_Claimed_AllowsClaimAgain(t *testing.T) {
+	store, _ := newS3Store(t)
+	ctx := context.Background()
+	if err := store.ClaimReport(ctx, awsRequestID); err != nil {
+		t.Fatalf("ClaimReport() = %v", err)
+	}
+	if err := store.ReleaseClaim(ctx, awsRequestID); err != nil {
+		t.Fatalf("ReleaseClaim() = %v", err)
+	}
+
+	err := store.ClaimReport(ctx, awsRequestID)
+
+	if err != nil {
+		t.Errorf("ClaimReport() after release = %v; want nil", err)
+	}
+}
+
 // 条件: 依頼の記録、全話者の音声と結果、report.claim、ほかの依頼の記録がある。
 // 内容: その依頼の音声、結果、記録を消し、report.claim とほかの依頼は残す。
 func TestS3StoreDiscard_Request_KeepsClaimAndOtherRequests(t *testing.T) {

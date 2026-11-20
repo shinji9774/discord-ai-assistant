@@ -54,6 +54,25 @@ func TestStoreClaimReport_SecondClaim_ReturnsErrReportClaimed(t *testing.T) {
 	}
 }
 
+// 条件: claim を取った依頼。
+// 内容: claim だけが消え、もう一度 ClaimReport できる。
+func TestStoreReleaseClaim_Claimed_AllowsClaimAgain(t *testing.T) {
+	store := &voicesummarytest.Store{}
+	ctx := context.Background()
+	if err := store.ClaimReport(ctx, "1441234567890123456"); err != nil {
+		t.Fatalf("ClaimReport() = %v", err)
+	}
+	if err := store.ReleaseClaim(ctx, "1441234567890123456"); err != nil {
+		t.Fatalf("ReleaseClaim() = %v", err)
+	}
+
+	err := store.ClaimReport(ctx, "1441234567890123456")
+
+	if err != nil {
+		t.Errorf("ClaimReport() after release = %v; want nil", err)
+	}
+}
+
 // 条件: 2 つの依頼がそれぞれマニフェストと音声を持ち、片方は文字起こしと claim も持つ。その片方を消す。
 // 内容: 消した依頼のマニフェスト、音声、文字起こしだけが無くなる。消した依頼の claim と、もう一方の依頼のものは残る。
 func TestStoreDiscard_TwoRequests_RemovesOnlyDiscardedRequestAndKeepsClaim(t *testing.T) {

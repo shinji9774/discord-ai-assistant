@@ -11,7 +11,7 @@ import (
 const testBaseURL = "https://craig.horse"
 
 // 条件: baseURL と scheme・host が同じで、パスが /rec/{英数字 10〜12 文字}、key がある録音リンク。
-// 内容: 録音 ID と鍵を取り出す。delete などほかのクエリ、前後の空白、baseURL の末尾の / は無視する。
+// 内容: 録音 ID と鍵を取り出す。delete があれば DeleteKey に入れる。前後の空白、baseURL の末尾の / は無視する。
 func TestParseLink_RecordingLink_ReturnsIDAndKey(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -20,7 +20,7 @@ func TestParseLink_RecordingLink_ReturnsIDAndKey(t *testing.T) {
 		want    craig.Link
 	}{
 		{"鍵つき", testBaseURL, "https://craig.horse/rec/AbCdEfGhIjKl?key=XyZ123", craig.Link{RecordingID: "AbCdEfGhIjKl", Key: "XyZ123"}},
-		{"delete つき", testBaseURL, "https://craig.horse/rec/AbCdEfGhIjKl?key=XyZ123&delete=Del456", craig.Link{RecordingID: "AbCdEfGhIjKl", Key: "XyZ123"}},
+		{"delete つき", testBaseURL, "https://craig.horse/rec/AbCdEfGhIjKl?key=XyZ123&delete=Del456", craig.Link{RecordingID: "AbCdEfGhIjKl", Key: "XyZ123", DeleteKey: "Del456"}},
 		{"ID が 10 文字", testBaseURL, "https://craig.horse/rec/A1b2C3d4E5?key=k", craig.Link{RecordingID: "A1b2C3d4E5", Key: "k"}},
 		{"host の大文字", testBaseURL, "https://CRAIG.horse/rec/AbCdEfGhIjKl?key=XyZ123", craig.Link{RecordingID: "AbCdEfGhIjKl", Key: "XyZ123"}},
 		{"baseURL の末尾に /", testBaseURL + "/", "https://craig.horse/rec/AbCdEfGhIjKl?key=XyZ123", craig.Link{RecordingID: "AbCdEfGhIjKl", Key: "XyZ123"}},
@@ -32,6 +32,28 @@ func TestParseLink_RecordingLink_ReturnsIDAndKey(t *testing.T) {
 
 			if err != nil || !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("ParseLink(%q) = %+v, %v; want %+v, nil", tt.raw, got, err, tt.want)
+			}
+		})
+	}
+}
+
+// 条件: 削除用のリンク（delete つき）と、ダウンロード用のリンク（delete なし）。
+// 内容: delete つきなら DeleteKey にその値が入り、無ければ空になる。
+func TestParseLink_DeleteQuery_SetsDeleteKeyOnlyWhenPresent(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want craig.Link
+	}{
+		{"削除用", testBaseURL + "/rec/AbCdEfGhIj?key=k1&delete=d1", craig.Link{RecordingID: "AbCdEfGhIj", Key: "k1", DeleteKey: "d1"}},
+		{"ダウンロード用", testBaseURL + "/rec/AbCdEfGhIj?key=k1", craig.Link{RecordingID: "AbCdEfGhIj", Key: "k1"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := craig.ParseLink(tt.raw, testBaseURL)
+
+			if err != nil || got != tt.want {
+				t.Errorf("ParseLink() = %+v, %v; want %+v, nil", got, err, tt.want)
 			}
 		})
 	}

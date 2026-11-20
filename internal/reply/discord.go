@@ -56,12 +56,18 @@ func buildMessageUpdate(result command.Result) discord.MessageUpdate {
 	return discord.NewMessageUpdate().WithContent(layout.content).WithFiles(layout.files...).WithAllowedMentions(&noAllowedMentions)
 }
 
+// rejectedError は、既存の文面を変えずに ErrPostRejected を見分けられるようにする。
+type rejectedError struct{ message string }
+
+func (e *rejectedError) Error() string { return e.message }
+func (e *rejectedError) Unwrap() error { return ErrPostRejected }
+
 // redactRESTError は、URL（interaction token を含む）・レスポンス本文・送った本文をエラー文から除く。Discord のコードと文言は残す。
 // operation は、失敗した操作の名前としてエラー文に入れる。
 func redactRESTError(err error, operation string) error {
 	var restErr *rest.Error
 	if errors.As(err, &restErr) && restErr.Response != nil {
-		return fmt.Errorf("discord rejected the %s: status %d, code %d: %s", operation, restErr.Response.StatusCode, restErr.Code, restErr.Message)
+		return &rejectedError{message: fmt.Sprintf("discord rejected the %s: status %d, code %d: %s", operation, restErr.Response.StatusCode, restErr.Code, restErr.Message)}
 	}
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {

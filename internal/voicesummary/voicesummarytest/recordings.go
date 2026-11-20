@@ -27,6 +27,8 @@ type Recordings struct {
 	Tracks      map[int][]byte  // トラック番号 → 音声の中身。Download がトラック番号の順に取り出す
 	DescribeErr error           // nil でなければ Describe はこれを返す
 	DownloadErr error           // nil でなければ Download は何も取り出さずにこれを返す
+	DeleteErr   error           // nil でなければ Delete はこれを返す
+	Deleted     []craig.Link    // Delete が呼ばれた link。呼ばれた順
 }
 
 var _ voicesummary.RecordingSource = (*Recordings)(nil)
@@ -50,6 +52,12 @@ func (r *Recordings) Download(_ context.Context, _ craig.Link, dir string, visit
 		}
 	}
 	return nil
+}
+
+// Delete は、呼ばれた link を記録して DeleteErr を返す。
+func (r *Recordings) Delete(_ context.Context, link craig.Link) error {
+	r.Deleted = append(r.Deleted, link)
+	return r.DeleteErr
 }
 
 func (r *Recordings) visitTrack(dir string, track int, visit func(craig.TrackFile) error) error {

@@ -42,9 +42,15 @@ const (
 	reasonRecordingLive        = "recording_live"
 	reasonRecordingTooLong     = "recording_too_long"
 
+	// Craig 側の録音を削除したあとに、受け付けの文へ続ける案内。
+	craigDeletedNotice      = "Craig 側の録音は削除しました。同じ録音ではもう再実行できません。"
+	craigDeleteFailedNotice = "Craig 側の録音を削除できませんでした。Craig の録音のページから削除してください。"
+	noticeSeparator         = "\n"
+
 	// downloadDirPattern は、録音を取り出す一時ディレクトリの名前の接頭辞。
 	downloadDirPattern = "summarize-voice-"
 	// cleanupTimeout は、失敗した依頼のデータを消すのに使える時間。呼び出し元の期限とは別に取る。
+	// Reporter が claim を解放するとき（retryLater）にも使う。
 	// worker の返信の予備（reply_reserve_seconds）より短くし、失敗通知の返信の時間を残す。
 	cleanupTimeout = 5 * time.Second
 )
@@ -59,6 +65,8 @@ type RecordingSource interface {
 	// Download は、全トラックを 1 つずつ dir に取り出して visit に渡す。
 	// visit が返ると、そのファイルを消す。
 	Download(ctx context.Context, link craig.Link, dir string, visit func(craig.TrackFile) error) error
+	// Delete は、Craig 側の録音の音声と、ダウンロード用に変換したファイルを消す。link.DeleteKey が空でないときだけ呼ぶ。
+	Delete(ctx context.Context, link craig.Link) error
 }
 
 // AudioStore は、受け付けの側が使う置き場。
@@ -72,7 +80,8 @@ type AudioStore interface {
 
 // JobStarter は、1 トラックの文字起こしを開始する。
 type JobStarter interface {
-	Start(ctx context.Context, requestID string, track int) error
+	// Start は、同じジョブが既にあれば nil を返す。
+	Start(ctx context.Context, job JobRef) error
 }
 
 // Dependencies は、/summarize-voice の受け付けが使う外部の依存。
@@ -166,12 +175,30 @@ func (c *Command) accept(ctx context.Context, inv command.Invocation, link craig
 		return command.Result{}, fmt.Errorf("create manifest: %w", err)
 	}
 	if len(m.Speakers) == 0 {
-		return c.reportNoSpeech(ctx, m)
+		result, err := c.reportNoSpeech(ctx, m)
+		if err != nil {
+			return result, err
+		}
+		return c.deleteFromCraig(ctx, link, result), nil
 	}
 	if err := c.transcribeTracks(ctx, link, m); err != nil {
 		return command.Result{}, errors.Join(err, c.discard(ctx, m))
 	}
-	return acceptedResult(), nil
+	return c.deleteFromCraig(ctx, link, acceptedResult()), nil
+}
+
+// deleteFromCraig は、削除用のリンクのときだけ Craig 側の録音を消し、その結果を応答の文に続ける。
+// 受け付けは済んでいるので、削除の失敗はエラーにしない。
+func (c *Command) deleteFromCraig(ctx context.Context, link craig.Link, result command.Result) command.Result {
+	if link.DeleteKey == "" {
+		return result
+	}
+	notice := craigDeletedNotice
+	if err := c.deps.Recordings.Delete(ctx, link); err != nil {
+		notice = craigDeleteFailedNotice
+	}
+	result.Text += noticeSeparator + notice
+	return result
 }
 
 // reportNoSpeech は、「発話なし」を依頼者に通知して投稿し、依頼のデータを消す。
@@ -229,7 +256,7 @@ func (c *Command) transcribeTrack(ctx context.Context, requestID string, f craig
 	if err := c.deps.Store.PutAudio(ctx, requestID, f.Track, audio); err != nil {
 		return fmt.Errorf("put audio of track %d: %w", f.Track, err)
 	}
-	if err := c.deps.Jobs.Start(ctx, requestID, f.Track); err != nil {
+	if err := c.deps.Jobs.Start(ctx, JobRef{RequestID: requestID, Track: f.Track, Attempt: firstAttempt}); err != nil {
 		return fmt.Errorf("start transcription of track %d: %w", f.Track, err)
 	}
 	return nil

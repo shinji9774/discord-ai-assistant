@@ -2,6 +2,7 @@ package reply
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/disgoorg/disgo/discord"
@@ -16,6 +17,10 @@ const (
 	mentionFormat           = "<@%s>\n"         // 依頼者への通知。結果の本文の前に置く
 	channelMessageOperation = "channel message" // エラー文に入れる操作の名前
 )
+
+// ErrPostRejected は、Discord が応答を返して投稿を断ったことを示す（投稿されていない）。
+// 通信の失敗や時間切れ（投稿されたか分からない）は、これで包まない。
+var ErrPostRejected = errors.New("discord rejected the post")
 
 // ChannelPost は、チャンネルへの投稿 1 件。
 type ChannelPost struct {

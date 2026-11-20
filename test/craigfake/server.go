@@ -19,6 +19,7 @@ const (
 	durationSegment  = "duration"
 	jobSegment       = "job"
 	keyQueryName     = "key"
+	deleteQueryName  = "delete"
 	contentType      = "application/json"
 	zipContentType   = "application/zip"
 
@@ -32,6 +33,14 @@ const (
 	codeInvalidKey = "invalid_key"
 	codeNoRec      = "no_rec"
 	codeJobExists  = "job_exists"
+	codeNoJob      = "no_job"
+	codeRecNoData  = "rec_no_data"
+	// codeInvalidDeleteKey は fake 独自のコード。Client はコードに依存しない。
+	codeInvalidDeleteKey = "invalid_delete_key"
+
+	// DeletionTargetJob と DeletionTargetRecording は Deletion.Target の値。
+	DeletionTargetJob       = "job"
+	DeletionTargetRecording = "recording"
 
 	// createdFileNameFormat は作ったジョブの出力ファイル名。Craig は 30 文字の乱数 + 拡張子にする。
 	createdFileNameFormat = "fakeoutput%024d.flac.zip"
@@ -51,18 +60,27 @@ type User struct {
 type Recording struct {
 	ID              string
 	Key             string
+	DeleteKey       string
 	GuildID         string
 	StartTime       time.Time
 	DurationSeconds float64
 	Live            bool
 	Users           []User
 	Tracks          map[int][]byte // トラック番号 → FLAC の中身（zip に "{track}-{username}.flac" で入れる）
+
+	deleted bool // 録音の削除が済んでいる（DELETE 後の状態。外から仕込まない）
 }
 
 // Job は録音の変換ジョブ。
 type Job struct {
 	Status         string // idle|running|complete|error|cancelled|queued
 	OutputFileName string
+}
+
+// Deletion は fake が受け付けた削除の記録。Target は "job" か "recording"。
+type Deletion struct {
+	RecordingID string
+	Target      string
 }
 
 type apiError struct {
@@ -100,7 +118,7 @@ type createJobBody struct {
 	} `json:"options"`
 }
 
-// Server は /api/v1/recordings/{id}（GET）、.../duration（GET）、.../job（GET・POST）、/dl/{file}（GET）に応える http.Handler。
+// Server は /api/v1/recordings/{id}（GET・DELETE）、.../duration（GET）、.../job（GET・POST・DELETE）、/dl/{file}（GET）に応える http.Handler。
 //
 // ジョブは GET .../job のたびに 1 段進む（queued・idle → running → complete）。
 // トラックの無い録音のジョブは、running の次に error で終わる（変換の失敗を再現する）。
@@ -111,6 +129,7 @@ type Server struct {
 	outputs      map[string]string // 出力ファイル名 → 録音 ID
 	failure      *apiError
 	jobCreations int
+	deletions    []Deletion
 }
 
 func New() *Server {
@@ -150,6 +169,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveJob(w, rec)
 	case segment == jobSegment && r.Method == http.MethodPost:
 		s.createJob(w, r, rec)
+	case segment == jobSegment && r.Method == http.MethodDelete:
+		s.deleteJob(w, rec)
+	case segment == "" && r.Method == http.MethodDelete:
+		s.deleteRecording(w, r, rec)
 	default:
 		http.NotFound(w, r)
 	}
@@ -222,6 +245,35 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request, rec Recording
 	job := Job{Status: statusQueued, OutputFileName: fmt.Sprintf(createdFileNameFormat, s.jobCreations)}
 	s.setJob(rec.ID, job)
 	writeJSON(w, map[string]*jobBody{"job": {Status: job.Status, OutputFileName: job.OutputFileName}})
+}
+
+// deleteJob はジョブと出力を消す。ジョブが無ければ no_job。s.mu を保持して呼ぶ。
+func (s *Server) deleteJob(w http.ResponseWriter, rec Recording) {
+	job, ok := s.jobs[rec.ID]
+	if !ok {
+		writeError(w, apiError{status: http.StatusBadRequest, code: codeNoJob})
+		return
+	}
+	delete(s.outputs, job.OutputFileName)
+	delete(s.jobs, rec.ID)
+	s.deletions = append(s.deletions, Deletion{RecordingID: rec.ID, Target: DeletionTargetJob})
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+// deleteRecording は削除の鍵が合えば録音を消し済みにする。s.mu を保持して呼ぶ。
+func (s *Server) deleteRecording(w http.ResponseWriter, r *http.Request, rec Recording) {
+	if rec.deleted {
+		writeError(w, apiError{status: http.StatusNotFound, code: codeRecNoData})
+		return
+	}
+	if r.URL.Query().Get(deleteQueryName) != rec.DeleteKey {
+		writeError(w, apiError{status: http.StatusUnauthorized, code: codeInvalidDeleteKey})
+		return
+	}
+	rec.deleted = true
+	s.recordings[rec.ID] = rec
+	s.deletions = append(s.deletions, Deletion{RecordingID: rec.ID, Target: DeletionTargetRecording})
+	writeJSON(w, map[string]bool{"ok": true})
 }
 
 func isActive(status string) bool {
@@ -322,6 +374,13 @@ func (s *Server) JobCreations() int {
 	return s.jobCreations
 }
 
+// Deletions は受け付けた削除の記録のコピーを返す。
+func (s *Server) Deletions() []Deletion {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Deletion(nil), s.deletions...)
+}
+
 // ExpireOutputs は出力ファイルを /dl/ から取れなくする（Craig の保存期間が過ぎた状況を再現する。ジョブの情報は残る）。
 func (s *Server) ExpireOutputs() {
 	s.mu.Lock()
@@ -329,10 +388,10 @@ func (s *Server) ExpireOutputs() {
 	s.outputs = map[string]string{}
 }
 
-// Reset は録音、ジョブ、失敗の設定、回数を初期化する。
+// Reset は録音、ジョブ、失敗の設定、回数、削除の記録を初期化する。
 func (s *Server) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.recordings, s.jobs, s.outputs = map[string]Recording{}, map[string]Job{}, map[string]string{}
-	s.failure, s.jobCreations = nil, 0
+	s.failure, s.jobCreations, s.deletions = nil, 0, nil
 }

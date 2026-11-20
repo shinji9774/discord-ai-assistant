@@ -15,8 +15,11 @@ import (
 	"discord-ai-assistant/test/transcribefake"
 )
 
-// awsTrack3JobName はトラック 3 のジョブ名（"summarize-voice-{依頼 ID}-{トラック番号}"）。
-const awsTrack3JobName = voicesummary.JobNamePrefix + awsRequestID + "-3"
+// awsTrack3JobName は、トラック 3 の初回のジョブ名（"summarize-voice-{依頼 ID}-{トラック番号}-{試行番号}"）。
+const awsTrack3JobName = voicesummary.JobNamePrefix + awsRequestID + "-3-1"
+
+// awsTrack3Job は、トラック 3 の初回のジョブ。
+var awsTrack3Job = voicesummary.JobRef{RequestID: awsRequestID, Track: 3, Attempt: voicesummary.FirstAttempt}
 
 // newTranscribeJobs は transcribefake に向けた TranscribeJobs を作る。結果は s3fake に書かれる。
 func newTranscribeJobs(t *testing.T) (*voicesummary.TranscribeJobs, *transcribefake.Server, *s3fake.Server) {
@@ -39,7 +42,7 @@ func newTranscribeJobs(t *testing.T) (*voicesummary.TranscribeJobs, *transcribef
 func TestTranscribeJobsStart_Track_StartsJobWithKeys(t *testing.T) {
 	jobs, fake, _ := newTranscribeJobs(t)
 
-	err := jobs.Start(context.Background(), awsRequestID, 3)
+	err := jobs.Start(context.Background(), awsTrack3Job)
 
 	want := []transcribefake.Job{{
 		Name: awsTrack3JobName, LanguageCode: "ja-JP", MediaFormat: "flac",
@@ -62,15 +65,15 @@ func TestTranscribeJobsStatus_JobState_ReturnsJobStatus(t *testing.T) {
 	}{
 		{"未開始", func(*voicesummary.TranscribeJobs, *transcribefake.Server) error { return nil }, voicesummary.JobPending},
 		{"処理中", func(jobs *voicesummary.TranscribeJobs, _ *transcribefake.Server) error {
-			return jobs.Start(context.Background(), awsRequestID, 3)
+			return jobs.Start(context.Background(), awsTrack3Job)
 		}, voicesummary.JobPending},
 		{"完了", func(jobs *voicesummary.TranscribeJobs, fake *transcribefake.Server) error {
-			err := jobs.Start(context.Background(), awsRequestID, 3)
+			err := jobs.Start(context.Background(), awsTrack3Job)
 			fake.Complete(awsTrack3JobName, []byte(`{}`))
 			return err
 		}, voicesummary.JobCompleted},
 		{"失敗", func(jobs *voicesummary.TranscribeJobs, fake *transcribefake.Server) error {
-			err := jobs.Start(context.Background(), awsRequestID, 3)
+			err := jobs.Start(context.Background(), awsTrack3Job)
 			fake.Fail(awsTrack3JobName)
 			return err
 		}, voicesummary.JobFailed},
@@ -82,7 +85,7 @@ func TestTranscribeJobsStatus_JobState_ReturnsJobStatus(t *testing.T) {
 				t.Fatalf("arrange: %v", err)
 			}
 
-			got, err := jobs.Status(context.Background(), awsRequestID, 3)
+			got, err := jobs.Status(context.Background(), awsTrack3Job)
 
 			if err != nil || got != tt.want {
 				t.Errorf("Status = %v, %v; want %v, nil", got, err, tt.want)
@@ -95,7 +98,7 @@ func TestTranscribeJobsStatus_JobState_ReturnsJobStatus(t *testing.T) {
 // 内容: 結果の JSON が、ジョブに渡した結果のキーに書かれる。
 func TestTranscribeJobsStart_ThenComplete_WritesTranscriptKey(t *testing.T) {
 	jobs, fake, results := newTranscribeJobs(t)
-	if err := jobs.Start(context.Background(), awsRequestID, 3); err != nil {
+	if err := jobs.Start(context.Background(), awsTrack3Job); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -104,5 +107,21 @@ func TestTranscribeJobsStart_ThenComplete_WritesTranscriptKey(t *testing.T) {
 	got, ok := results.Object(awsTestBucket, "requests/req-1/transcripts/3.json")
 	if !ok || string(got) != `{"results":{}}` {
 		t.Errorf("transcript = %q (exists %t), want %q", got, ok, `{"results":{}}`)
+	}
+}
+
+// 条件: 同じジョブを 2 回開始する（開き直しを複数の実行が同時に試みる）。
+// 内容: 2 回目も nil を返す。
+func TestTranscribeJobsStart_SameJobTwice_ReturnsNil(t *testing.T) {
+	jobs, _, _ := newTranscribeJobs(t)
+	job := voicesummary.JobRef{RequestID: awsRequestID, Track: 1, Attempt: voicesummary.RetryAttempt}
+	if err := jobs.Start(context.Background(), job); err != nil {
+		t.Fatalf("first Start() = %v", err)
+	}
+
+	err := jobs.Start(context.Background(), job)
+
+	if err != nil {
+		t.Errorf("Start() = %v; want nil", err)
 	}
 }

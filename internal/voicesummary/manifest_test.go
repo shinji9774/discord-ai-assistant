@@ -15,13 +15,15 @@ type parsedJobName struct {
 	ok        bool
 }
 
-// 条件: 依頼 ID とトラック番号。
-// 内容: "summarize-voice-{依頼 ID}-{トラック番号}" になる。
-func TestJobName_RequestIDAndTrack_JoinsAfterPrefix(t *testing.T) {
-	got := voicesummary.JobName(requestID, 3)
+// 条件: 依頼 ID、トラック番号、試行番号。
+// 内容: 接頭辞のあとに "-" で区切って並べる。
+func TestJobName_JobRef_JoinsRequestTrackAndAttemptAfterPrefix(t *testing.T) {
+	job := voicesummary.JobRef{RequestID: requestID, Track: 2, Attempt: voicesummary.RetryAttempt}
 
-	if want := "summarize-voice-1441234567890123456-3"; got != want {
-		t.Errorf("JobName = %q, want %q", got, want)
+	got := voicesummary.JobName(job)
+
+	if want := "summarize-voice-" + requestID + "-2-2"; got != want {
+		t.Errorf("JobName() = %q; want %q", got, want)
 	}
 }
 
@@ -37,7 +39,7 @@ func TestRequestIDOf_NameFromJobName_ReturnsRequestID(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			name := voicesummary.JobName(requestID, tt.track)
+			name := voicesummary.JobName(voicesummary.JobRef{RequestID: requestID, Track: tt.track, Attempt: voicesummary.RetryAttempt})
 
 			gotID, gotOK := voicesummary.RequestIDOf(name)
 
@@ -57,13 +59,15 @@ func TestRequestIDOf_OtherName_ReturnsNotOK(t *testing.T) {
 		jobName string
 	}{
 		{"empty", ""},
-		{"other feature", "summarize-text-1441234567890123456-1"},
+		{"other feature", "summarize-text-1441234567890123456-1-1"},
 		{"prefix only", "summarize-voice-"},
 		{"no track", "summarize-voice-1441234567890123456"},
-		{"empty request id", "summarize-voice--1"},
-		{"empty track", "summarize-voice-1441234567890123456-"},
-		{"letter track", "summarize-voice-1441234567890123456-a"},
-		{"signed track", "summarize-voice-1441234567890123456-+1"},
+		{"no attempt (old format)", "summarize-voice-123-1"},
+		{"letter attempt", "summarize-voice-123-1-x"},
+		{"empty request id", "summarize-voice--1-1"},
+		{"empty attempt", "summarize-voice-1441234567890123456-1-"},
+		{"letter track", "summarize-voice-1441234567890123456-a-1"},
+		{"signed track", "summarize-voice-1441234567890123456-+1-1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

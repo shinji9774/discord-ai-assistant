@@ -3,10 +3,10 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -34,11 +34,8 @@ const (
 	exitCodeStartupFailure = 1
 )
 
-// transcriptionJobStateChange は、EventBridge の "Transcribe Job State Change" の detail のうち、使う項目。
-// 状態（COMPLETED / FAILED）は Reporter が Transcribe に問い合わせて確かめるので読まない。
-type transcriptionJobStateChange struct {
-	TranscriptionJobName string `json:"TranscriptionJobName"`
-}
+// cleanupReserve は、claim を手放す時間として Lambda の期限から残す時間。
+const cleanupReserve = 30 * time.Second
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -89,12 +86,23 @@ func run(logger *slog.Logger) error {
 // エラーを返すと、Lambda の非同期呼び出しの再試行に任せることになる（design「Reporter」の事後条件）。
 func newEventHandler(reporter *voicesummary.Reporter) func(context.Context, events.EventBridgeEvent) error {
 	return func(ctx context.Context, event events.EventBridgeEvent) error {
-		var detail transcriptionJobStateChange
-		if err := json.Unmarshal(event.Detail, &detail); err != nil {
-			return fmt.Errorf("decode transcription job state change: %w", err)
+		jobName, err := voicesummary.TranscriptionJobNameOf(event.Detail)
+		if err != nil {
+			return err
 		}
-		return reporter.Report(ctx, detail.TranscriptionJobName)
+		ctx, cancel := withCleanupReserve(ctx)
+		defer cancel()
+		return reporter.Report(ctx, jobName)
 	}
+}
+
+// withCleanupReserve は、Lambda の期限の cleanupReserve 前を期限にする。
+func withCleanupReserve(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return context.WithCancel(ctx)
+	}
+	return context.WithDeadline(ctx, deadline.Add(-cleanupReserve))
 }
 
 func requireEnv(name string) (string, error) {

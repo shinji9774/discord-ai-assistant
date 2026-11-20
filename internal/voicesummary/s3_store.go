@@ -140,6 +140,11 @@ func (s *S3Store) ClaimReport(ctx context.Context, requestID string) error {
 	return nil
 }
 
+// ReleaseClaim は、report.claim だけを消す。
+func (s *S3Store) ReleaseClaim(ctx context.Context, requestID string) error {
+	return s.deleteObject(ctx, claimKey(requestID))
+}
+
 // Discard は、音声、文字起こしの結果、マニフェストの順に消す。マニフェストを最後にするのは、
 // 途中で失敗しても再実行で残りを消せるようにするため。report.claim は内容を持たないので消さない（ライフサイクルで消える）。
 func (s *S3Store) Discard(ctx context.Context, m Manifest) error {

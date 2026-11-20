@@ -741,11 +741,10 @@ const (
 	// voiceReporterSucceeded は、voicereporter が nil を返したときの RIE の応答の本文。
 	voiceReporterSucceeded = "null"
 	// unknownVoiceJobName は、マニフェストのない依頼のジョブ名（接頭辞は voicesummary.JobNamePrefix）。
-	unknownVoiceJobName = "summarize-voice-1499999999999999999-1"
+	unknownVoiceJobName = "summarize-voice-1499999999999999999-1-1"
 )
 
 // invokeVoiceReporter は、jobName の文字起こしが完了したときの EventBridge のイベントを voicereporter の RIE へ送り、応答の本文を返す。
-// RIE は同時に 1 件しか処理できないので、worker の呼び出しと同じ mutex を取る。
 func invokeVoiceReporter(t *testing.T, jobName string) string {
 	t.Helper()
 	detail, err := json.Marshal(map[string]string{"TranscriptionJobName": jobName, "TranscriptionJobStatus": "COMPLETED"})
@@ -762,9 +761,16 @@ func invokeVoiceReporter(t *testing.T, jobName string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return invokeRIE(t, voiceReporterURL, payload)
+}
+
+// invokeRIE は payload を RIE へ送り、応答の本文を返す。
+// RIE は同時に 1 件しか処理できないので、worker の呼び出しと同じ mutex を取る。
+func invokeRIE(t *testing.T, url string, payload []byte) string {
+	t.Helper()
 	rieInvocationMu.Lock()
 	defer rieInvocationMu.Unlock()
-	resp, err := http.Post(voiceReporterURL, "application/json", bytes.NewReader(payload))
+	resp, err := http.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -774,6 +780,30 @@ func invokeVoiceReporter(t *testing.T, jobName string) string {
 		t.Fatal(err)
 	}
 	return string(raw)
+}
+
+// invokeVoiceFailure は、やり直しを使い切った voicereporter の失敗の宛先の invocation record を、voicefailure の RIE へ送り、応答の本文を返す。
+// requestPayload は、jobName の文字起こしのイベント。
+func invokeVoiceFailure(t *testing.T, jobName string) string {
+	t.Helper()
+	detail, err := json.Marshal(map[string]string{"TranscriptionJobName": jobName, "TranscriptionJobStatus": "COMPLETED"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"requestContext": map[string]any{"condition": "RetriesExhausted", "approximateInvokeCount": 3},
+		"requestPayload": events.EventBridgeEvent{
+			Version:    "0",
+			Source:     "aws.transcribe",
+			DetailType: "Transcribe Job State Change",
+			Region:     "ap-northeast-1",
+			Detail:     detail,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return invokeRIE(t, voiceFailureURL, payload)
 }
 
 // 条件: マニフェストのない依頼のジョブ名で、完了のイベントを voicereporter に渡す。
@@ -803,6 +833,8 @@ const (
 
 	voiceRecordingID  = "AbCdEfGhIjKl"
 	voiceRecordingKey = "XyZ123secret"
+	// voiceRecordingDeleteKey は削除用のリンクの delete の値。
+	voiceRecordingDeleteKey = "DeLeTe456secret"
 
 	// botCanPostResults は VIEW_CHANNEL（1<<10）、SEND_MESSAGES（1<<11）、ATTACH_FILES（1<<15）の和。
 	botCanPostResults = "35840"
@@ -822,9 +854,19 @@ func voiceLink() string {
 	return craigURL + "/rec/" + voiceRecordingID + "?key=" + voiceRecordingKey
 }
 
-// voiceJobName は、voiceInteractionID の依頼の track の文字起こしのジョブ名（"summarize-voice-{依頼 ID}-{トラック}"）。
+// voiceDeleteLink は voiceLink に削除の鍵を付けた、削除用の録音リンク。
+func voiceDeleteLink() string {
+	return voiceLink() + "&delete=" + voiceRecordingDeleteKey
+}
+
+// voiceJobName は、voiceInteractionID の依頼の track の文字起こしのジョブ名（"summarize-voice-{依頼 ID}-{トラック}-1"）。
 func voiceJobName(track int) string {
-	return "summarize-voice-" + voiceInteractionID + "-" + strconv.Itoa(track)
+	return "summarize-voice-" + voiceInteractionID + "-" + strconv.Itoa(track) + "-1"
+}
+
+// voiceRetryJobName は、voiceJobName の track のジョブが失敗したときに開き直すジョブの名前（試行 2）。
+func voiceRetryJobName(track int) string {
+	return "summarize-voice-" + voiceInteractionID + "-" + strconv.Itoa(track) + "-2"
 }
 
 // voiceKey は、voiceInteractionID の依頼の S3 のキー（"requests/{依頼 ID}/" + rest）。
@@ -862,6 +904,7 @@ func voiceRecording() craigfake.Recording {
 	return craigfake.Recording{
 		ID:              voiceRecordingID,
 		Key:             voiceRecordingKey,
+		DeleteKey:       voiceRecordingDeleteKey,
 		GuildID:         voiceGuildID,
 		StartTime:       time.Date(2026, 11, 18, 5, 0, 0, 0, time.UTC),
 		DurationSeconds: 4980,
@@ -912,6 +955,12 @@ func voiceTranscriptionJob(track int) transcribefake.Job {
 		OutputKey:    voiceKey("transcripts/" + strconv.Itoa(track) + ".json"),
 		Status:       "IN_PROGRESS",
 	}
+}
+
+// completedJob は job を COMPLETED にしたもの。
+func completedJob(job transcribefake.Job) transcribefake.Job {
+	job.Status = "COMPLETED"
+	return job
 }
 
 // 条件: 停止済みの録音（人の話者 2 人と音楽 bot）の録音リンクで、結果を投稿できるテキストチャンネルから /summarize-voice を実行する。
@@ -1026,5 +1075,121 @@ func TestSummarizeVoice_AllJobsCompleted_PostsSummaryOnceAndDiscardsData(t *test
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("完了後 = %+v,\nwant %+v", got, want)
+	}
+}
+
+// 条件: 削除用のリンクで /summarize-voice を実行する。
+// 内容: 受け付けの文に削除の案内が付き、Craig の fake からジョブ、録音の順に消える。
+func TestSummarizeVoice_DeleteLink_DeletesCraigRecordingAfterAccepting(t *testing.T) {
+	resetFakes()
+	arrangeVoiceRecording()
+
+	invokeIngress(t, voiceBody(t, voiceDeleteLink()), ingressPrivate)
+
+	type deletionFacts struct {
+		Reply     discordfake.Response
+		Deletions []craigfake.Deletion
+		Jobs      []transcribefake.Job
+	}
+	want := deletionFacts{
+		Reply: discordReply(voiceAccepted+"\nCraig 側の録音は削除しました。同じ録音ではもう再実行できません。", map[string]string{}),
+		Deletions: []craigfake.Deletion{
+			{RecordingID: voiceRecordingID, Target: craigfake.DeletionTargetJob},
+			{RecordingID: voiceRecordingID, Target: craigfake.DeletionTargetRecording},
+		},
+		Jobs: []transcribefake.Job{voiceTranscriptionJob(1), voiceTranscriptionJob(2)},
+	}
+	got := deletionFacts{Reply: waitForDiscordResponse(t), Deletions: craigF.Deletions(), Jobs: transcribeF.Jobs()}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("削除 = %+v,\nwant %+v", got, want)
+	}
+}
+
+// 条件: 受け付けた依頼で、トラックの試行 1 の文字起こしが失敗し、voicereporter にそのイベントが届く。試行 2 が完了し、そのイベントが届く。
+// 内容: 試行 2 のジョブが開始され、最後に要約が依頼者への通知つきで 1 回投稿され、S3 から依頼のデータが消える。
+func TestSummarizeVoice_FirstTranscriptionFails_RetriesThenReports(t *testing.T) {
+	resetFakes()
+	arrangeVoiceRecording()
+	bedrock.RespondWith(voiceSummary, "end_turn")
+	invokeIngress(t, voiceBody(t, voiceLink()), ingressPrivate)
+	waitForDiscordResponse(t)
+	transcribeF.Complete(voiceJobName(2), transcribeResult(t,
+		audioSegment{ID: 0, Transcript: "よろしくお願いします", StartTime: "5.0", EndTime: "6.8"},
+	))
+	transcribeF.Fail(voiceJobName(1))
+	failedResponse := invokeVoiceReporter(t, voiceJobName(1))
+	jobsAfterRetryStart := transcribeF.Jobs()
+	postsWhileRetrying := len(discord.ChannelMessages())
+	transcribeF.Complete(voiceRetryJobName(1), transcribeResult(t,
+		audioSegment{ID: 0, Transcript: "始めます", StartTime: "0.0", EndTime: "1.2"},
+		audioSegment{ID: 1, Transcript: "次は予算の話です", StartTime: "754.0", EndTime: "756.5"},
+	))
+
+	finalResponse := invokeVoiceReporter(t, voiceRetryJobName(1))
+
+	type retryFacts struct {
+		Responses          []string
+		JobsAfterRetry     []transcribefake.Job
+		PostsWhileRetrying int
+		Posts              []discordfake.ChannelMessage
+		RemainingKeys      []string
+	}
+	failedJob, retryJob := voiceTranscriptionJob(1), voiceTranscriptionJob(1)
+	failedJob.Status = "FAILED"
+	retryJob.Name = voiceRetryJobName(1)
+	want := retryFacts{
+		Responses:          []string{voiceReporterSucceeded, voiceReporterSucceeded},
+		JobsAfterRetry:     []transcribefake.Job{failedJob, completedJob(voiceTranscriptionJob(2)), retryJob},
+		PostsWhileRetrying: 0,
+		Posts: []discordfake.ChannelMessage{{
+			ChannelID:      voiceChannelID,
+			Authorization:  "Bot " + botTokenValue,
+			Content:        "<@" + voiceRequesterID + ">\n" + voiceHeading + "\n\n" + voiceSummary,
+			AllowedUserIDs: []string{voiceRequesterID},
+			Files:          map[string]string{"transcript.txt": voiceTranscript},
+		}},
+		RemainingKeys: []string{voiceKey("report.claim")},
+	}
+	got := retryFacts{
+		Responses:          []string{failedResponse, finalResponse},
+		JobsAfterRetry:     jobsAfterRetryStart,
+		PostsWhileRetrying: postsWhileRetrying,
+		Posts:              discord.ChannelMessages(),
+		RemainingKeys:      s3F.Keys(voiceBucketName),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("再試行 = %+v,\nwant %+v", got, want)
+	}
+}
+
+// 条件: 受け付けた依頼について、voicefailure に invocation record（requestPayload に Transcribe のイベント）を 2 回渡す。
+// 内容: 失敗の通知が依頼者への通知つきで 1 回だけ届き、S3 には report.claim だけが残る。
+func TestVoiceFailure_RetriesExhausted_PostsFailureOnceAndDiscards(t *testing.T) {
+	resetFakes()
+	arrangeVoiceRecording()
+	invokeIngress(t, voiceBody(t, voiceLink()), ingressPrivate)
+	waitForDiscordResponse(t)
+
+	responses := []string{invokeVoiceFailure(t, voiceJobName(1)), invokeVoiceFailure(t, voiceJobName(1))}
+
+	type failureFacts struct {
+		Responses     []string
+		Posts         []discordfake.ChannelMessage
+		RemainingKeys []string
+	}
+	want := failureFacts{
+		Responses: []string{voiceReporterSucceeded, voiceReporterSucceeded},
+		Posts: []discordfake.ChannelMessage{{
+			ChannelID:      voiceChannelID,
+			Authorization:  "Bot " + botTokenValue,
+			Content:        "<@" + voiceRequesterID + ">\n処理に失敗しました。時間をおいてもう一度実行してください。",
+			AllowedUserIDs: []string{voiceRequesterID},
+			Files:          map[string]string{},
+		}},
+		RemainingKeys: []string{voiceKey("report.claim")},
+	}
+	got := failureFacts{Responses: responses, Posts: discord.ChannelMessages(), RemainingKeys: s3F.Keys(voiceBucketName)}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("失敗の通知 = %+v,\nwant %+v", got, want)
 	}
 }

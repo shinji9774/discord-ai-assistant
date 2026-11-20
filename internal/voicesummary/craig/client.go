@@ -119,7 +119,10 @@ func displayName(globalName, username string) string {
 
 // recordingURL は録音の API の URL を作る。鍵を含むので、エラー文に入れない。
 func (c *Client) recordingURL(link Link, suffix string) string {
-	query := url.Values{keyQueryName: {link.Key}}
+	return c.recordingURLWithQuery(link, suffix, url.Values{keyQueryName: {link.Key}})
+}
+
+func (c *Client) recordingURLWithQuery(link Link, suffix string, query url.Values) string {
 	return c.baseURL + recordingsPath + url.PathEscape(link.RecordingID) + suffix + "?" + query.Encode()
 }
 
@@ -148,12 +151,18 @@ func (c *Client) doJSON(op string, req *http.Request, out any) error {
 }
 
 func responseError(op string, resp *http.Response) error {
-	var body errorResponse
-	_ = json.NewDecoder(io.LimitReader(resp.Body, maxErrorBodyBytes)).Decode(&body)
-	if unavailableCodes[body.Code] {
-		return fmt.Errorf("craig %s: code %s: %w", op, body.Code, ErrRecordingUnavailable)
+	code := readErrorCode(resp.Body)
+	if unavailableCodes[code] {
+		return fmt.Errorf("craig %s: code %s: %w", op, code, ErrRecordingUnavailable)
 	}
-	return fmt.Errorf("craig %s: status %d, code %q", op, resp.StatusCode, body.Code)
+	return fmt.Errorf("craig %s: status %d, code %q", op, resp.StatusCode, code)
+}
+
+// readErrorCode はエラー応答の本文から Craig のエラーコードを読む。読めなければ空文字を返す。
+func readErrorCode(body io.Reader) string {
+	var parsed errorResponse
+	_ = json.NewDecoder(io.LimitReader(body, maxErrorBodyBytes)).Decode(&parsed)
+	return parsed.Code
 }
 
 // maxErrorBodyBytes はエラー応答から読む上限。エラー本文は {error, code} だけの小さな JSON である。
@@ -166,6 +175,54 @@ func stripURL(err error) error {
 		return fmt.Errorf("%s: %w", ue.Op, ue.Err)
 	}
 	return err
+}
+
+const (
+	codeNoJob     = "no_job"
+	codeRecNoData = "rec_no_data"
+
+	opDeleteJob       = "delete job"
+	opDeleteRecording = "delete recording"
+)
+
+// goneResponse は、削除の対象が既に無いことを示す応答。削除の成功として扱う。
+type goneResponse struct {
+	status int
+	code   string
+}
+
+// Delete は、変換済みのファイル、録音の音声の順に Craig 側から消す。
+// 録音の削除は変換済みのファイルに触れないため、ジョブを先に消す。
+func (c *Client) Delete(ctx context.Context, link Link) error {
+	jobURL := c.recordingURL(link, jobPath)
+	if err := c.deleteResource(ctx, opDeleteJob, jobURL, goneResponse{http.StatusBadRequest, codeNoJob}); err != nil {
+		return err
+	}
+	query := url.Values{keyQueryName: {link.Key}, deleteQueryName: {link.DeleteKey}}
+	recordingURL := c.recordingURLWithQuery(link, "", query)
+	return c.deleteResource(ctx, opDeleteRecording, recordingURL, goneResponse{http.StatusNotFound, codeRecNoData})
+}
+
+// deleteResource は DELETE を送る。gone に当たる応答は削除済みとして成功にする。
+// responseError を使わないのは、rec_no_data を ErrRecordingUnavailable に変換させないため。
+func (c *Client) deleteResource(ctx context.Context, op, target string, gone goneResponse) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, target, nil)
+	if err != nil {
+		return fmt.Errorf("craig %s: build request", op) // URL を含めない
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("craig %s: %w", op, stripURL(err))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	code := readErrorCode(resp.Body)
+	if resp.StatusCode == gone.status && code == gone.code {
+		return nil
+	}
+	return fmt.Errorf("craig %s: status %d, code %q", op, resp.StatusCode, code)
 }
 
 // defaultPollInterval はジョブの状態を確かめる間隔。Craig の公式の画面と同じ。

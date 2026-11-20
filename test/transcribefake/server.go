@@ -31,6 +31,9 @@ const (
 	jobNotFoundErrorType = "BadRequestException"
 	jobNotFoundMessage   = "The requested job couldn't be found. Check the job name and try your request again."
 
+	conflictErrorType = "ConflictException"
+	conflictMessage   = "The requested job name already exists. Use a different job name."
+
 	statusInProgress = "IN_PROGRESS"
 	statusCompleted  = "COMPLETED"
 	statusFailed     = "FAILED"
@@ -89,7 +92,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.serveGet(w, fields)
 }
 
-// serveStart は StartTranscriptionJob に応える。s.mu を保持して呼ぶ。
+// serveStart は StartTranscriptionJob に応える。同じ名前のジョブが既にあれば、実際の Transcribe と同じく ConflictException。s.mu を保持して呼ぶ。
 func (s *Server) serveStart(w http.ResponseWriter, fields cbor.Map) {
 	media, _ := fields[fieldMedia].(cbor.Map)
 	job := Job{
@@ -100,6 +103,14 @@ func (s *Server) serveStart(w http.ResponseWriter, fields cbor.Map) {
 		OutputBucket: stringField(fields, fieldOutputBucket),
 		OutputKey:    stringField(fields, fieldOutputKey),
 		Status:       statusInProgress,
+	}
+	if s.find(job.Name) != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write(cbor.Encode(cbor.Map{
+			fieldErrorType:    cbor.String(conflictErrorType),
+			fieldErrorMessage: cbor.String(conflictMessage),
+		}))
+		return
 	}
 	s.jobs = append(s.jobs, job)
 	_, _ = w.Write(encodeJob(job))

@@ -114,19 +114,22 @@ type commandOutcome struct {
 	Keys     []string
 	Manifest voicesummary.Manifest // 依頼のマニフェスト。無ければゼロ値
 	Audio    map[int][]byte
-	Jobs     []voicesummarytest.Job
+	Jobs     []voicesummary.JobRef
 	Posts    []reply.ChannelPost
+	// CraigDeleted は、Craig 側の削除を求められたリンク。
+	CraigDeleted []craig.Link
 }
 
 func (s *commandScenario) outcome(result command.Result) commandOutcome {
 	manifest, _ := s.store.Manifest(requestID)
 	return commandOutcome{
-		Result:   result,
-		Keys:     s.store.Keys(),
-		Manifest: manifest,
-		Audio:    s.store.Audio(requestID),
-		Jobs:     s.jobs.Started,
-		Posts:    s.poster.Posts,
+		Result:       result,
+		Keys:         s.store.Keys(),
+		Manifest:     manifest,
+		Audio:        s.store.Audio(requestID),
+		Jobs:         s.jobs.Started,
+		Posts:        s.poster.Posts,
+		CraigDeleted: s.recordings.Deleted,
 	}
 }
 
@@ -164,8 +167,34 @@ func acceptedOutcome(manifest voicesummary.Manifest) commandOutcome {
 		Keys:     []string{requestID + "/audio/1.flac", requestID + "/audio/2.flac", requestID + "/manifest.json"},
 		Manifest: manifest,
 		Audio:    map[int][]byte{1: []byte("たろうの音声"), 2: []byte("はなこの音声")},
-		Jobs:     []voicesummarytest.Job{{RequestID: requestID, Track: 1}, {RequestID: requestID, Track: 2}},
+		Jobs:     []voicesummary.JobRef{{RequestID: requestID, Track: 1, Attempt: 1}, {RequestID: requestID, Track: 2, Attempt: 1}},
 	}
+}
+
+// 削除用のリンクのテストで使う削除の鍵。
+const voiceDeleteKey = "d1"
+
+// deleteLinkText は、voiceLink に削除の鍵（delete=d1）を足した、削除用のリンクの文字列。
+func deleteLinkText() string {
+	return voiceLink + "&delete=" + voiceDeleteKey
+}
+
+// deleteLink は、deleteLinkText を解釈した Link。
+func deleteLink() craig.Link {
+	return craig.Link{RecordingID: voiceRecordingID, Key: voiceLinkKey, DeleteKey: voiceDeleteKey}
+}
+
+// acceptedMessage は、受け付けたときに実行者だけへ返す文。
+func acceptedMessage() string {
+	return acceptedText
+}
+
+// acceptedOutcomeWith は、acceptedOutcome の応答文を text に、Craig 側の削除を求められたリンクを deleted に差し替えたもの。
+func acceptedOutcomeWith(text string, deleted []craig.Link) commandOutcome {
+	want := acceptedOutcome(acceptedManifest())
+	want.Result = command.Result{Text: text}
+	want.CraigDeleted = deleted
+	return want
 }
 
 // assertDefinitionJSON は、コマンドの定義を JSON にして、wantJSON と値として等しいかを比べる（キーの順と空白の違いは無視する）。
@@ -340,16 +369,16 @@ func TestExecute_SystemFailure_ReturnsErrorWithoutLeavingData(t *testing.T) {
 		name      string
 		arrange   func(s *commandScenario)
 		wantErr   error // nil なら、なんらかのエラー
-		wantJobs  []voicesummarytest.Job
+		wantJobs  []voicesummary.JobRef
 		wantPosts []reply.ChannelPost
 	}{
 		{"describe fails", func(s *commandScenario) { s.recordings.DescribeErr = errInjected }, errInjected, nil, nil},
 		{"download fails", func(s *commandScenario) { s.recordings.DownloadErr = errInjected }, errInjected, nil, nil},
 		{"put audio fails", func(s *commandScenario) { s.store.PutAudioErr = errInjected }, errInjected, nil, nil},
 		{"second job start fails", func(s *commandScenario) { s.jobs.StartErrs = []error{nil, errInjected} }, errInjected,
-			[]voicesummarytest.Job{{RequestID: requestID, Track: 1}}, nil},
+			[]voicesummary.JobRef{{RequestID: requestID, Track: 1, Attempt: 1}}, nil},
 		{"target track missing from download", func(s *commandScenario) { delete(s.recordings.Tracks, 2) }, nil,
-			[]voicesummarytest.Job{{RequestID: requestID, Track: 1}}, nil},
+			[]voicesummary.JobRef{{RequestID: requestID, Track: 1, Attempt: 1}}, nil},
 		{"all target tracks missing from download", func(s *commandScenario) {
 			delete(s.recordings.Tracks, 1)
 			delete(s.recordings.Tracks, 2)
@@ -369,4 +398,74 @@ func TestExecute_SystemFailure_ReturnsErrorWithoutLeavingData(t *testing.T) {
 			s.verifyFailure(t, result, err, tt.wantErr, commandOutcome{Jobs: tt.wantJobs, Posts: tt.wantPosts})
 		})
 	}
+}
+
+// 条件: 削除用のリンクで、人の話者がいる録音を受け付ける。
+// 内容: 全トラックの文字起こしを開始してから Craig 側を消し、受け付けの文に削除の案内を続ける。マニフェストに鍵は入らない。
+func TestExecute_DeleteLinkAccepted_DeletesFromCraigAndAddsNotice(t *testing.T) {
+	s := newCommandScenario()
+
+	result, err := s.execute(voiceInvocation(deleteLinkText()))
+
+	s.verify(t, result, err, acceptedOutcomeWith(acceptedMessage()+"\n"+voicesummary.CraigDeletedNotice, []craig.Link{deleteLink()}))
+}
+
+// 条件: 削除用のリンクで、bot の話者しかいない録音を受け付ける。
+// 内容: 「発話なし」を投稿したあとに Craig 側を消す。
+func TestExecute_DeleteLinkWithOnlyBotSpeaker_DeletesAfterNoSpeechReport(t *testing.T) {
+	s := newCommandScenario()
+	s.recordings.Recording.Speakers = []craig.Speaker{{Track: 3, Name: "craig", Bot: true}}
+
+	result, err := s.execute(voiceInvocation(deleteLinkText()))
+
+	s.verify(t, result, err, commandOutcome{
+		Result:       command.Result{Text: acceptedText + "\n" + voicesummary.CraigDeletedNotice},
+		Posts:        []reply.ChannelPost{noSpeechPost(manifestOf(recordingLength))},
+		CraigDeleted: []craig.Link{deleteLink()},
+	})
+}
+
+// 条件: 削除用のリンクで受け付けたが、Craig 側の削除に失敗する。
+// 内容: 受け付けを返し、Craig のページから削除するよう促す文を続ける。エラーにしない。
+func TestExecute_CraigDeleteFails_AcceptsWithDeleteFailedNotice(t *testing.T) {
+	s := newCommandScenario()
+	s.recordings.DeleteErr = errors.New("injected failure")
+
+	result, err := s.execute(voiceInvocation(deleteLinkText()))
+
+	s.verify(t, result, err, acceptedOutcomeWith(acceptedMessage()+"\n"+voicesummary.CraigDeleteFailedNotice, []craig.Link{deleteLink()}))
+}
+
+// 条件: 削除用のリンクで、受け付けに至らない（録音中、文字起こしの開始の失敗、同じ依頼の 2 回目）。
+// 内容: Craig 側を消さない（2 回目は 1 回目の削除だけが残る）。
+func TestExecute_DeleteLinkNotAccepted_KeepsCraigRecording(t *testing.T) {
+	const live = "録音がまだ続いています。録音を停止してから、もう一度実行してください。"
+	errInjected := errors.New("injected failure")
+
+	t.Run("still recording", func(t *testing.T) {
+		s := newCommandScenario()
+		s.recordings.Recording.Live = true
+
+		result, err := s.execute(voiceInvocation(deleteLinkText()))
+
+		s.verify(t, result, err, commandOutcome{Result: command.Guided(live, "recording_live")})
+	})
+	t.Run("transcription start fails", func(t *testing.T) {
+		s := newCommandScenario()
+		s.jobs.StartErrs = []error{errInjected}
+
+		result, err := s.execute(voiceInvocation(deleteLinkText()))
+
+		s.verifyFailure(t, result, err, errInjected, commandOutcome{})
+	})
+	t.Run("same request twice", func(t *testing.T) {
+		s := newCommandScenario()
+		if _, err := s.execute(voiceInvocation(deleteLinkText())); err != nil {
+			t.Fatalf("first Execute: %v", err)
+		}
+
+		result, err := s.execute(voiceInvocation(deleteLinkText()))
+
+		s.verify(t, result, err, acceptedOutcomeWith(acceptedMessage(), []craig.Link{deleteLink()}))
+	})
 }

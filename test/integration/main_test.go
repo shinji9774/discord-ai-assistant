@@ -49,8 +49,8 @@ const (
 	voiceBucketName       = "it-voice-bucket"
 )
 
-// rieInvocationMu は RIE への呼び出し（worker と voicereporter）を 1 件ずつにする。
-// worker の処理が終わってから voicereporter を呼ぶ順序も、これで保つ。
+// rieInvocationMu は RIE への呼び出し（worker・voicereporter・voicefailure）を 1 件ずつにする。
+// worker の処理が終わってから voicereporter と voicefailure を呼ぶ順序も、これで保つ。
 var rieInvocationMu sync.Mutex
 
 // 結合テスト全体で共有する、fake と RIE コンテナ。
@@ -64,14 +64,16 @@ var (
 	craigF      *craigfake.Server
 	s3F         *s3fake.Server
 	transcribeF *transcribefake.Server
-	reporterSSM *ssmfake.Server // voicereporter 用。worker の ssm の記録（ちょうど 1 件）を崩さないために分ける
+	reporterSSM *ssmfake.Server // voicereporter と voicefailure 用。worker の ssm の記録（ちょうど 1 件）を崩さないために分ける
 
 	workerContainer        testcontainers.Container
 	ingressContainer       testcontainers.Container
 	voiceReporterContainer testcontainers.Container
+	voiceFailureContainer  testcontainers.Container
 	ingressURL             string
 	workerURL              string
 	voiceReporterURL       string
+	voiceFailureURL        string
 	ingressPublicKey       ed25519.PublicKey
 	ingressPrivate         ed25519.PrivateKey
 	discordURL             string // discordfake のコンテナから見える URL
@@ -195,11 +197,26 @@ func setUp(ctx context.Context) error {
 		return err
 	}
 	voiceReporterURL, err = containerURL(ctx, voiceReporterContainer)
+	if err != nil {
+		return err
+	}
+
+	voiceFailureContainer, err = startRIE(ctx, "/voicefailure", map[string]string{
+		"BOT_TOKEN_PARAMETER_NAME": botTokenParameterName,
+		"VOICE_BUCKET_NAME":        voiceBucketName,
+		"AWS_ENDPOINT_URL_S3":      s3URL,
+		"AWS_ENDPOINT_URL_SSM":     reporterSSMURL,
+		"DISCORD_API_BASE_URL":     discordURL,
+	})
+	if err != nil {
+		return err
+	}
+	voiceFailureURL, err = containerURL(ctx, voiceFailureContainer)
 	return err
 }
 
 func tearDown(ctx context.Context) {
-	for _, c := range []testcontainers.Container{ingressContainer, workerContainer, voiceReporterContainer} {
+	for _, c := range []testcontainers.Container{ingressContainer, workerContainer, voiceReporterContainer, voiceFailureContainer} {
 		if c != nil {
 			_ = testcontainers.TerminateContainer(c, testcontainers.StopContext(ctx))
 		}
