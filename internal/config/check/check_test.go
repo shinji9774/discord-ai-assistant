@@ -1,7 +1,6 @@
 package check_test
 
 import (
-	"errors"
 	"testing"
 
 	"discord-ai-assistant/internal/config/check"
@@ -16,54 +15,90 @@ func errorText(err error) string {
 	return err.Error()
 }
 
-// 条件: 値が 0。
-// 内容: キー名と値を含むエラーになる。
-func TestPositive_Zero_ReturnsErrorWithKeyAndValue(t *testing.T) {
-	err := check.Positive("max_searches", 0)
+type rangeSample struct {
+	Count int `yaml:"count" validate:"min=1,max=25"`
+}
 
-	if got, want := errorText(err), "max_searches: must be 1 or greater (got 0)"; got != want {
-		t.Errorf("Positive error = %q, want %q", got, want)
+type notBlankSample struct {
+	Name string `yaml:"name" validate:"notblank"`
+}
+
+type containsSample struct {
+	Prompt string `yaml:"prompt" validate:"contains={today}"`
+}
+
+type httpURLSample struct {
+	URL string `yaml:"url" validate:"http_url"`
+}
+
+type innerSample struct {
+	Limit int `yaml:"limit,omitempty" validate:"min=1"`
+}
+
+type outerSample struct {
+	Name  string      `yaml:"name" validate:"notblank"`
+	Inner innerSample `yaml:"inner"`
+}
+
+// 条件: 各タグ（min / max / notblank / contains / http_url）に違反する値を 1 つずつ渡す。
+// 内容: タグごとの文言で、yaml 名のキーつきのエラーになる。
+func TestStruct_ViolatingEachTag_ReturnsMessageForTag(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{"min", rangeSample{Count: 0}, "count: must be 1 or greater (got 0)"},
+		{"max", rangeSample{Count: 26}, "count: must be 25 or less (got 26)"},
+		{"notblank", notBlankSample{Name: "  "}, "name: must not be empty"},
+		{"contains", containsSample{Prompt: "no placeholder"}, "prompt: must contain {today}"},
+		{"http_url", httpURLSample{URL: "craig.horse"}, `url: must be an absolute http or https URL (got "craig.horse")`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := errorText(check.Struct(tt.value))
+
+			if got != tt.want {
+				t.Errorf("Struct error = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
-// 条件: 値が 1。
-// 内容: エラーにならない。
-func TestPositive_One_ReturnsNil(t *testing.T) {
-	err := check.Positive("max_searches", 1)
+// 条件: ネストした構造体のフィールドが違反している。
+// 内容: キーは、先頭の型名を除き、yaml 名を "." でつないだ形になる。
+func TestStruct_NestedFieldViolation_ReturnsDottedYAMLKey(t *testing.T) {
+	value := outerSample{Name: "bot", Inner: innerSample{Limit: 0}}
+
+	err := check.Struct(value)
+
+	if got, want := errorText(err), "inner.limit: must be 1 or greater (got 0)"; got != want {
+		t.Errorf("Struct error = %q, want %q", got, want)
+	}
+}
+
+// 条件: 複数のフィールドが違反している。
+// 内容: 違反を全件、フィールド定義順に改行でつないで返す。
+func TestStruct_MultipleViolations_ReturnsAllJoined(t *testing.T) {
+	value := outerSample{Name: "", Inner: innerSample{Limit: 0}}
+
+	err := check.Struct(value)
+
+	want := "name: must not be empty\n" +
+		"inner.limit: must be 1 or greater (got 0)"
+	if got := errorText(err); got != want {
+		t.Errorf("Struct error = %q, want %q", got, want)
+	}
+}
+
+// 条件: すべての値が検証を通る。
+// 内容: nil を返す。
+func TestStruct_NoViolation_ReturnsNil(t *testing.T) {
+	value := outerSample{Name: "bot", Inner: innerSample{Limit: 1}}
+
+	err := check.Struct(value)
 
 	if got := errorText(err); got != noError {
-		t.Errorf("Positive error = %q, want %q", got, noError)
-	}
-}
-
-// 条件: 値が空白だけ。
-// 内容: キー名を含むエラーになる。
-func TestNotEmpty_BlankOnly_ReturnsErrorWithKey(t *testing.T) {
-	err := check.NotEmpty("text_model_id", "  ")
-
-	if got, want := errorText(err), "text_model_id: must not be empty"; got != want {
-		t.Errorf("NotEmpty error = %q, want %q", got, want)
-	}
-}
-
-// 条件: 2 つの問題をまとめたエラー。
-// 内容: それぞれのキーの前に、親のキーが付く。
-func TestUnder_JoinedErrors_PrefixesEachKey(t *testing.T) {
-	joined := errors.Join(errors.New("a: x"), errors.New("b: y"))
-
-	err := check.Under("ask", joined)
-
-	if got, want := errorText(err), "ask.a: x\nask.b: y"; got != want {
-		t.Errorf("Under error = %q, want %q", got, want)
-	}
-}
-
-// 条件: 問題が無い（nil）。
-// 内容: nil のまま返す。
-func TestUnder_Nil_ReturnsNil(t *testing.T) {
-	err := check.Under("ask", nil)
-
-	if got := errorText(err); got != noError {
-		t.Errorf("Under error = %q, want %q", got, noError)
+		t.Errorf("Struct error = %q, want %q", got, noError)
 	}
 }

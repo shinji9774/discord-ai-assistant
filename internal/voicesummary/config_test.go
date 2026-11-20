@@ -3,6 +3,7 @@ package voicesummary_test
 import (
 	"testing"
 
+	"discord-ai-assistant/internal/config/check"
 	"discord-ai-assistant/internal/voicesummary"
 )
 
@@ -21,7 +22,7 @@ func validConfig() voicesummary.Config {
 
 // 条件: craig_base_url だけを変える（http / https の絶対 URL、空、scheme なし、ほかの scheme、host なし、解釈できない URL）。
 // 内容: http か https で host を持つ URL だけを受け入れ、それ以外はキーを名指ししたエラーになる。
-func TestValidate_CraigBaseURL_AcceptsOnlyAbsoluteHTTPURL(t *testing.T) {
+func TestStruct_CraigBaseURL_AcceptsOnlyAbsoluteHTTPURL(t *testing.T) {
 	tests := []struct {
 		name string
 		url  string
@@ -41,10 +42,10 @@ func TestValidate_CraigBaseURL_AcceptsOnlyAbsoluteHTTPURL(t *testing.T) {
 			cfg := validConfig()
 			cfg.CraigBaseURL = tt.url
 
-			got := errorText(cfg.Validate())
+			got := errorText(check.Struct(cfg))
 
 			if got != tt.want {
-				t.Errorf("Validate = %q, want %q", got, tt.want)
+				t.Errorf("Struct = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -52,7 +53,7 @@ func TestValidate_CraigBaseURL_AcceptsOnlyAbsoluteHTTPURL(t *testing.T) {
 
 // 条件: max_recording_minutes を 0、1、Transcribe の上限ちょうど、上限 + 1 にする。
 // 内容: 1 以上、上限（480 分）以下だけを受け入れる。
-func TestValidate_MaxRecordingMinutes_AcceptsOneUpToTranscribeLimit(t *testing.T) {
+func TestStruct_MaxRecordingMinutes_AcceptsOneUpToTranscribeLimit(t *testing.T) {
 	tests := []struct {
 		name    string
 		minutes int
@@ -68,10 +69,10 @@ func TestValidate_MaxRecordingMinutes_AcceptsOneUpToTranscribeLimit(t *testing.T
 			cfg := validConfig()
 			cfg.MaxRecordingMinutes = tt.minutes
 
-			got := errorText(cfg.Validate())
+			got := errorText(check.Struct(cfg))
 
 			if got != tt.want {
-				t.Errorf("Validate = %q, want %q", got, tt.want)
+				t.Errorf("Struct = %q, want %q", got, tt.want)
 			}
 		})
 	}
