@@ -100,14 +100,15 @@ func TestRespond_ResultWithFiles_AttachesFiles(t *testing.T) {
 }
 
 // 条件: Discord が 500 を返す。
-// 内容: エラーが返り、エラー文に interaction token を含まない。
-func TestRespond_DiscordFails_ReturnsError(t *testing.T) {
+// 内容: status・Discord のコードと文言だけのエラーが返り、interaction token と URL を含まない。
+func TestRespond_DiscordFails_ReturnsStatusCodeAndMessageWithoutToken(t *testing.T) {
 	responder, fake := newResponder(t)
 	fake.FailWith(500)
 
 	err := responder.Respond(context.Background(), inv, command.Result{Text: "x"})
 
-	if err == nil || strings.Contains(err.Error(), "tok1") {
-		t.Errorf("Respond() error = %v, want non-nil error without the token", err)
+	want := "discord rejected the response update: status 500, code 0: rejected by fake"
+	if err == nil || err.Error() != want {
+		t.Errorf("Respond() error = %v, want %q", err, want)
 	}
 }

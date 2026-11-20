@@ -72,11 +72,11 @@ func utf16Length(s string) int {
 	return len(utf16.Encode([]rune(s)))
 }
 
-// redactRequestURL は interaction token を含む URL をエラー文から除く。
+// redactRequestURL は interaction token を含む URL とレスポンス本文をエラー文から除く。Discord のコードと文言は残す。
 func redactRequestURL(err error) error {
 	var restErr *rest.Error
 	if errors.As(err, &restErr) && restErr.Response != nil {
-		return fmt.Errorf("discord rejected the response update: status %d", restErr.Response.StatusCode)
+		return fmt.Errorf("discord rejected the response update: status %d, code %d: %s", restErr.Response.StatusCode, restErr.Code, restErr.Message)
 	}
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {

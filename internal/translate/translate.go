@@ -4,6 +4,7 @@ package translate
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"path"
 	"strings"
 
@@ -27,6 +28,15 @@ const (
 	messageUnsupportedFile = "対応しているファイル形式は .txt / .html / .docx です。"
 	messageFileTooLarge    = "ファイルは 100 KB 以下にしてください。"
 	messageFileTranslated  = "%s を%sに翻訳しました。"
+
+	// 案内の理由と診断値のキー。worker が診断のためにログへ出す。
+	reasonNoInput              = "no_input"
+	reasonBothInputs           = "both_inputs"
+	reasonUnsupportedExtension = "unsupported_extension"
+	reasonFileTooLarge         = "file_too_large"
+	attrKeyExtension           = "extension"
+	attrKeySizeBytes           = "size_bytes"
+	attrKeyMaxBytes            = "max_bytes"
 )
 
 // contentTypesByExtension は拡張子（小文字）から TranslateDocument に渡す形式を引く。
@@ -78,10 +88,10 @@ func (c *Command) Execute(ctx context.Context, inv command.Invocation) (command.
 	text := inv.Options[optionText]
 	file, hasFile := inv.Attachments[optionFile]
 	if text == "" && !hasFile {
-		return command.Result{Text: messageNoInput}, nil
+		return command.Guided(messageNoInput, reasonNoInput), nil
 	}
 	if text != "" && hasFile {
-		return command.Result{Text: messageBothInputs}, nil
+		return command.Guided(messageBothInputs, reasonBothInputs), nil
 	}
 	target, err := targetLanguage(inv.Options[optionTo])
 	if err != nil {
@@ -105,10 +115,12 @@ func (c *Command) translateFile(ctx context.Context, file command.Attachment, ta
 	extension := path.Ext(file.Filename)
 	contentType, ok := contentTypesByExtension[strings.ToLower(extension)]
 	if !ok {
-		return command.Result{Text: messageUnsupportedFile}, nil
+		return command.Guided(messageUnsupportedFile, reasonUnsupportedExtension,
+			slog.String(attrKeyExtension, strings.ToLower(extension))), nil
 	}
 	if file.Size > c.cfg.MaxFileSizeBytes {
-		return command.Result{Text: messageFileTooLarge}, nil
+		return command.Guided(messageFileTooLarge, reasonFileTooLarge,
+			slog.Int(attrKeySizeBytes, file.Size), slog.Int(attrKeyMaxBytes, c.cfg.MaxFileSizeBytes)), nil
 	}
 	content, err := c.fetcher.Fetch(ctx, file.URL)
 	if err != nil {

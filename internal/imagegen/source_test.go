@@ -76,73 +76,73 @@ func pngHeaderOnly(width, height int) []byte {
 	return buf.Bytes()
 }
 
-func TestSourceSizeAcceptable_AtLimit_True(t *testing.T) {
+func TestCheckSourceSize_AtLimit_Accepted(t *testing.T) {
 	// 条件: Discord が伝えた大きさがちょうど testConfig.Source.MaxBytes
 	// 内容: 受け付けられる
 	attachment := command.Attachment{Size: testConfig.Source.MaxBytes}
 
-	got := sourceSizeAcceptable(testConfig.Source, attachment)
+	got := checkSourceSize(testConfig.Source, attachment)
 
-	if !got {
-		t.Errorf("sourceSizeAcceptable(testConfig.Source, %d) = false, want true", attachment.Size)
+	if got != sourceAccepted {
+		t.Errorf("checkSourceSize(testConfig.Source, %d) = %q, want accepted", attachment.Size, got)
 	}
 }
 
-func TestSourceSizeAcceptable_OverLimit_False(t *testing.T) {
+func TestCheckSourceSize_OverLimit_RejectsWithSize(t *testing.T) {
 	// 条件: Discord が伝えた大きさが testConfig.Source.MaxBytes を 1 バイト超える
-	// 内容: 受け付けられない
+	// 内容: 大きさを理由に受け付けない
 	attachment := command.Attachment{Size: testConfig.Source.MaxBytes + 1}
 
-	got := sourceSizeAcceptable(testConfig.Source, attachment)
+	got := checkSourceSize(testConfig.Source, attachment)
 
-	if got {
-		t.Errorf("sourceSizeAcceptable(testConfig.Source, %d) = true, want false", attachment.Size)
+	if got != sourceRejectedSize {
+		t.Errorf("checkSourceSize(testConfig.Source, %d) = %q, want %q", attachment.Size, got, sourceRejectedSize)
 	}
 }
 
-func TestSourceImageAcceptable_RegisteredButNotAllowedFormat_False(t *testing.T) {
+func TestCheckSourceImage_RegisteredButNotAllowedFormat_RejectsWithFormat(t *testing.T) {
 	// 条件: image に登録済みだが PNG・JPEG ではない形式で、寸法の条件はすべて満たす画像
-	// 内容: 登録の有無ではなく形式名で判定し、受け付けない（7.3）
+	// 内容: 登録の有無ではなく形式名で判定し、形式を理由に受け付けない（7.3）
 	image.RegisterFormat(fakeFormatName, fakeFormatMagic, nil, func(io.Reader) (image.Config, error) {
 		return image.Config{Width: fakeFormatSide, Height: fakeFormatSide}, nil
 	})
 	content := []byte(fakeFormatMagic)
 
-	got := sourceImageAcceptable(testConfig.Source, content)
+	got := checkSourceImage(testConfig.Source, content)
 
-	if got {
-		t.Errorf("sourceImageAcceptable(testConfig.Source, %s content) = true, want false", fakeFormatName)
+	if got != sourceRejectedFormat {
+		t.Errorf("checkSourceImage(testConfig.Source, %s content) = %q, want %q", fakeFormatName, got, sourceRejectedFormat)
 	}
 }
 
-func TestSourceImageAcceptable_ByFormatAndDimensions_ReturnsExpected(t *testing.T) {
+func TestCheckSourceImage_ByFormatAndDimensions_ReturnsRejection(t *testing.T) {
 	// 条件: 形式・各辺・総画素数・縦横比が、境界の内側と外側にある画像
-	// 内容: 条件をすべて満たすときだけ true になる（7.3）
+	// 内容: 条件をすべて満たすときだけ受け付け、外れたときは外れた条件を返す（7.3）
 	cases := []struct {
 		name    string
 		content []byte
-		want    bool
+		want    sourceRejection
 	}{
-		{"PNG", encodePNG(t, 100, 100), true},
-		{"JPEG", encodeJPEG(t, 100, 100), true},
-		{"GIF", []byte(gifHeader), false},
-		{"テキスト", []byte("not an image"), false},
-		{"各辺が下限未満（63×64）", encodePNG(t, testConfig.Source.MinSide-1, testConfig.Source.MinSide), false},
-		{"各辺が下限（64×64）", encodePNG(t, testConfig.Source.MinSide, testConfig.Source.MinSide), true},
-		{"総画素数が上限（5000×5000）", pngHeaderOnly(pixelLimitSide, pixelLimitSide), true},
-		{"総画素数が上限を 1 辺ぶん超える（5000×5001）", pngHeaderOnly(pixelLimitSide, pixelLimitSide+1), false},
-		{"縦横比が上限（2.5:1）", encodePNG(t, aspectLimitLongSide, aspectLimitShortSide), true},
-		{"縦横比が上限（1:2.5）", encodePNG(t, aspectLimitShortSide, aspectLimitLongSide), true},
-		{"横長で縦横比が上限を超える", encodePNG(t, aspectLimitLongSide+1, aspectLimitShortSide), false},
-		{"縦長で縦横比が上限を超える", encodePNG(t, aspectLimitShortSide, aspectLimitLongSide+1), false},
+		{"PNG", encodePNG(t, 100, 100), sourceAccepted},
+		{"JPEG", encodeJPEG(t, 100, 100), sourceAccepted},
+		{"GIF", []byte(gifHeader), sourceRejectedDecode},
+		{"テキスト", []byte("not an image"), sourceRejectedDecode},
+		{"各辺が下限未満（63×64）", encodePNG(t, testConfig.Source.MinSide-1, testConfig.Source.MinSide), sourceRejectedSideTooSmall},
+		{"各辺が下限（64×64）", encodePNG(t, testConfig.Source.MinSide, testConfig.Source.MinSide), sourceAccepted},
+		{"総画素数が上限（5000×5000）", pngHeaderOnly(pixelLimitSide, pixelLimitSide), sourceAccepted},
+		{"総画素数が上限を 1 辺ぶん超える（5000×5001）", pngHeaderOnly(pixelLimitSide, pixelLimitSide+1), sourceRejectedTooManyPixels},
+		{"縦横比が上限（2.5:1）", encodePNG(t, aspectLimitLongSide, aspectLimitShortSide), sourceAccepted},
+		{"縦横比が上限（1:2.5）", encodePNG(t, aspectLimitShortSide, aspectLimitLongSide), sourceAccepted},
+		{"横長で縦横比が上限を超える", encodePNG(t, aspectLimitLongSide+1, aspectLimitShortSide), sourceRejectedAspectOutOfRange},
+		{"縦長で縦横比が上限を超える", encodePNG(t, aspectLimitShortSide, aspectLimitLongSide+1), sourceRejectedAspectOutOfRange},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sourceImageAcceptable(testConfig.Source, tc.content)
+			got := checkSourceImage(testConfig.Source, tc.content)
 
 			if got != tc.want {
-				t.Errorf("sourceImageAcceptable(testConfig.Source, %s content) = %v, want %v", tc.name, got, tc.want)
+				t.Errorf("checkSourceImage(testConfig.Source, %s content) = %q, want %q", tc.name, got, tc.want)
 			}
 		})
 	}

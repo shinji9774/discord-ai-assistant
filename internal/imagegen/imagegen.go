@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 
 	"github.com/disgoorg/disgo/discord"
@@ -26,8 +27,12 @@ const (
 	messageSourceNotAcceptable = "元にする画像を受け付けられませんでした。受け付けられるのは、PNG または JPEG で、10 MB 以下、各辺 64 ピクセル以上、総画素数 25,000,000 以下（例: 5712×4284）、縦横比 1:2.5 から 2.5:1 の画像です。"
 )
 
-// errSourceNotAcceptable は、元画像が受け付けられる条件を満たさないことを表す。利用者に文言で伝える。
-var errSourceNotAcceptable = errors.New("imagegen: source image not acceptable")
+// 案内の理由と診断値のキー。worker が診断のためにログへ出す。
+const (
+	reasonSourceNotAcceptable = "source_not_acceptable"
+	reasonContentFiltered     = "content_filtered"
+	attrKeyRejection          = "rejection"
+)
 
 // aspectRatios は aspect_ratio の選択肢。定義の choices と入力の検証が同じ表を使う。
 var aspectRatios = []string{"1:1", "16:9", "3:2", "2:3", "9:16"}
@@ -104,8 +109,9 @@ func (c *Command) Execute(ctx context.Context, inv command.Invocation) (command.
 	if hasSource {
 		var err error
 		source, err = c.prepareSource(ctx, attachment)
-		if errors.Is(err, errSourceNotAcceptable) {
-			return command.Result{Text: messageSourceNotAcceptable}, nil
+		var rejection sourceRejection
+		if errors.As(err, &rejection) {
+			return command.Guided(messageSourceNotAcceptable, reasonSourceNotAcceptable, slog.String(attrKeyRejection, string(rejection))), nil
 		}
 		if err != nil {
 			return command.Result{}, err
@@ -123,7 +129,7 @@ func (c *Command) Execute(ctx context.Context, inv command.Invocation) (command.
 		image, err = c.images.FromText(ctx, written, aspectRatio)
 	}
 	if errors.Is(err, ErrContentFiltered) {
-		return command.Result{Text: messageContentFiltered}, nil
+		return command.Guided(messageContentFiltered, reasonContentFiltered), nil
 	}
 	if err != nil {
 		return command.Result{}, err
@@ -132,17 +138,17 @@ func (c *Command) Execute(ctx context.Context, inv command.Invocation) (command.
 }
 
 // prepareSource は元画像を、大きさの判定 → 取得 → 形式と寸法の判定 → 必要なら縮小の順に用意する。
-// 受け付けられないときは errSourceNotAcceptable を返す。
+// 受け付けられないときは、満たさなかった条件（sourceRejection）を返す。
 func (c *Command) prepareSource(ctx context.Context, attachment command.Attachment) ([]byte, error) {
-	if !sourceSizeAcceptable(c.cfg.Source, attachment) {
-		return nil, errSourceNotAcceptable
+	if rejection := checkSourceSize(c.cfg.Source, attachment); rejection != sourceAccepted {
+		return nil, rejection
 	}
 	content, err := c.fetcher.Fetch(ctx, attachment.URL)
 	if err != nil {
 		return nil, fmt.Errorf("fetch source image: %w", err)
 	}
-	if !sourceImageAcceptable(c.cfg.Source, content) {
-		return nil, errSourceNotAcceptable
+	if rejection := checkSourceImage(c.cfg.Source, content); rejection != sourceAccepted {
+		return nil, rejection
 	}
 	return fitSource(c.cfg.Source, content)
 }

@@ -97,42 +97,62 @@ func TestDiscordHistoryReaderReadBefore_MoreThanPageSize_ReadsFullPage(t *testin
 	}
 }
 
-// 条件: Discord が履歴の取得を 403（Missing Access）で拒む。
-// 内容: ErrHistoryForbidden を返す。
-func TestDiscordHistoryReaderReadBefore_Forbidden_ReturnsErrHistoryForbidden(t *testing.T) {
+// 条件: Discord が履歴の取得を 403（コード 50001）で拒む。
+// 内容: Discord のコードと文言を保持した HistoryForbiddenError を返し、errors.Is(err, ErrHistoryForbidden) も真になる。
+func TestDiscordHistoryReaderReadBefore_Forbidden_ReturnsForbiddenErrorWithCodeAndMessage(t *testing.T) {
 	reader, fake := newHistoryReader(t)
 	fake.RejectHistory(historyChannel, http.StatusForbidden, 50001)
 
 	_, err := reader.ReadBefore(context.Background(), snowflake.MustParse(historyChannel), idAt(60))
 
-	if !errors.Is(err, summarize.ErrHistoryForbidden) {
-		t.Errorf("err = %v, want %v", err, summarize.ErrHistoryForbidden)
+	var forbidden *summarize.HistoryForbiddenError
+	got := historyForbiddenOutcome{IsErrHistoryForbidden: errors.Is(err, summarize.ErrHistoryForbidden)}
+	if errors.As(err, &forbidden) {
+		got.Error = *forbidden
+	}
+	want := historyForbiddenOutcome{IsErrHistoryForbidden: true, Error: summarize.HistoryForbiddenError{Code: 50001, Message: "rejected by fake"}}
+	if got != want {
+		t.Errorf("outcome = %+v, want %+v", got, want)
 	}
 }
 
+// historyForbiddenOutcome は、403 のエラーを一括で比べるための値。
+type historyForbiddenOutcome struct {
+	IsErrHistoryForbidden bool
+	Error                 summarize.HistoryForbiddenError
+}
+
 // 条件: Discord が履歴の取得を 404（Unknown Channel、コード 10003）で拒む。
-// 内容: status と Discord のコードだけを含むエラーを返す（レスポンス本文と URL を含めない）。
+// 内容: status・Discord のコード・Discord の文言だけを含むエラーを返す（レスポンス本文と URL を含めない）。
 func TestDiscordHistoryReaderReadBefore_OtherHTTPError_ReturnsStatusAndCodeOnly(t *testing.T) {
 	reader, fake := newHistoryReader(t)
 	fake.RejectHistory(historyChannel, http.StatusNotFound, 10003)
 
 	_, err := reader.ReadBefore(context.Background(), snowflake.MustParse(historyChannel), idAt(60))
 
-	if want := "get channel messages: status 404, code 10003"; err == nil || err.Error() != want {
+	if want := "get channel messages: status 404, code 10003: rejected by fake"; err == nil || err.Error() != want {
 		t.Errorf("err = %v, want %q", err, want)
 	}
 }
 
-// 条件: Discord の API に接続できない（サーバーが閉じている）。
-// 内容: 元のエラー（URL を含みうる）の文言を含めず、固定の文言のエラーを返す。
-func TestDiscordHistoryReaderReadBefore_ConnectionFailed_ReturnsFixedMessageWithoutURL(t *testing.T) {
-	srv := httptest.NewServer(discordfake.New())
-	reader := summarize.NewDiscordHistoryReader("bot-token", srv.URL)
-	srv.Close()
+// 条件: Discord の API への依頼が、ctx の取り消しで失敗する（*url.Error になる）。
+// 内容: 内側のエラー（context.Canceled）を errors.Is でたどれ、エラー文に URL を含めない。
+func TestDiscordHistoryReaderReadBefore_RequestFailed_WrapsInnerErrorWithoutURL(t *testing.T) {
+	reader, _ := newHistoryReader(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
-	_, err := reader.ReadBefore(context.Background(), snowflake.MustParse(historyChannel), idAt(60))
+	_, err := reader.ReadBefore(ctx, snowflake.MustParse(historyChannel), idAt(60))
 
-	if want := "get channel messages: request failed"; err == nil || err.Error() != want {
-		t.Errorf("err = %v, want %q", err, want)
+	got := requestFailedOutcome{IsCanceled: errors.Is(err, context.Canceled), Message: fmt.Sprint(err)}
+	want := requestFailedOutcome{IsCanceled: true, Message: "get channel messages: request failed: context canceled"}
+	if got != want {
+		t.Errorf("outcome = %+v, want %+v", got, want)
 	}
+}
+
+// requestFailedOutcome は、接続の失敗のエラーを一括で比べるための値。
+type requestFailedOutcome struct {
+	IsCanceled bool
+	Message    string
 }

@@ -48,11 +48,11 @@ func Run(ctx context.Context, cfg Config, definitions []discord.ApplicationComma
 	return nil
 }
 
-// redactRequest は Authorization ヘッダを持つリクエストをエラー文に含めない。
+// redactRequest は Authorization ヘッダを持つリクエストをエラー文に含めない。Discord のコードと文言は残す。
 func redactRequest(action string, err error) error {
 	var restErr *rest.Error
 	if errors.As(err, &restErr) && restErr.Response != nil {
-		return fmt.Errorf("discord rejected the %s: status %d", action, restErr.Response.StatusCode)
+		return fmt.Errorf("discord rejected the %s: status %d, code %d: %s", action, restErr.Response.StatusCode, restErr.Code, restErr.Message)
 	}
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {

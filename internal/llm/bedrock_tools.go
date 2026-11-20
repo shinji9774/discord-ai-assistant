@@ -20,6 +20,14 @@ const (
 	schemaTypeString     = "string"
 )
 
+// ErrInvalidToolUse に付ける、どの検査で外れたかを表す文脈。モデルが返した値は含めない。
+const (
+	reasonOutputNotMessage      = "response output is not a message"
+	reasonNoToolUseBlock        = "stop reason is tool use but no tool use block"
+	reasonToolInputMissing      = "tool use has no input"
+	reasonToolInputNotStringMap = "tool input is not a string map"
+)
+
 // ErrInvalidToolUse は、モデルが求めたツールの呼び出しを読み取れなかったことを表す。
 var ErrInvalidToolUse = errors.New("invalid tool use")
 
@@ -96,7 +104,7 @@ func inputSchema(parameters []ToolParameter) map[string]any {
 func runTools(ctx context.Context, out *bedrockruntime.ConverseOutput, run ToolRunner) ([]types.Message, error) {
 	message, ok := out.Output.(*types.ConverseOutputMemberMessage)
 	if !ok {
-		return nil, ErrInvalidToolUse
+		return nil, fmt.Errorf("%w: %s", ErrInvalidToolUse, reasonOutputNotMessage)
 	}
 	var results []types.ContentBlock
 	for _, block := range message.Value.Content {
@@ -111,18 +119,18 @@ func runTools(ctx context.Context, out *bedrockruntime.ConverseOutput, run ToolR
 		results = append(results, toolResultBlock(use.Value.ToolUseId, run(ctx, call)))
 	}
 	if len(results) == 0 {
-		return nil, ErrInvalidToolUse
+		return nil, fmt.Errorf("%w: %s", ErrInvalidToolUse, reasonNoToolUseBlock)
 	}
 	return []types.Message{message.Value, {Role: types.ConversationRoleUser, Content: results}}, nil
 }
 
 func toolCallOf(use types.ToolUseBlock) (ToolCall, error) {
 	if use.Input == nil {
-		return ToolCall{}, ErrInvalidToolUse
+		return ToolCall{}, fmt.Errorf("%w: %s", ErrInvalidToolUse, reasonToolInputMissing)
 	}
 	var input map[string]string
 	if err := use.Input.UnmarshalSmithyDocument(&input); err != nil {
-		return ToolCall{}, fmt.Errorf("%w: %v", ErrInvalidToolUse, err)
+		return ToolCall{}, fmt.Errorf("%w: %s: %v", ErrInvalidToolUse, reasonToolInputNotStringMap, err)
 	}
 	return ToolCall{Name: aws.ToString(use.Name), Input: input}, nil
 }

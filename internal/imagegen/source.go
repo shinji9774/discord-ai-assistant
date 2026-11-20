@@ -19,27 +19,49 @@ const (
 	formatJPEG = "jpeg"
 )
 
-// sourceSizeAcceptable は、取得する前に、Discord が伝えた大きさで判定する。
-func sourceSizeAcceptable(cfg SourceConfig, attachment command.Attachment) bool {
-	return attachment.Size <= cfg.MaxBytes
+// sourceRejection は、元画像が受け付けられる条件のうち、どれを満たさなかったか。ゼロ値（空）は、すべて満たすこと。
+// error として返すと、利用者に文言で伝える案内になる。値は snake_case の固定文字列で、ログにそのまま出せる。
+type sourceRejection string
+
+const (
+	sourceAccepted                 sourceRejection = ""
+	sourceRejectedSize             sourceRejection = "size_over_limit"
+	sourceRejectedDecode           sourceRejection = "decode_failed"
+	sourceRejectedFormat           sourceRejection = "format_not_allowed"
+	sourceRejectedSideTooSmall     sourceRejection = "side_too_small"
+	sourceRejectedTooManyPixels    sourceRejection = "too_many_pixels"
+	sourceRejectedAspectOutOfRange sourceRejection = "aspect_out_of_range"
+)
+
+func (r sourceRejection) Error() string { return "imagegen: source image not acceptable: " + string(r) }
+
+// checkSourceSize は、取得する前に、Discord が伝えた大きさで判定する。
+func checkSourceSize(cfg SourceConfig, attachment command.Attachment) sourceRejection {
+	if attachment.Size > cfg.MaxBytes {
+		return sourceRejectedSize
+	}
+	return sourceAccepted
 }
 
-// sourceImageAcceptable は、取得した後に、形式と寸法を判定する。画素は展開しない。
-func sourceImageAcceptable(cfg SourceConfig, content []byte) bool {
+// checkSourceImage は、取得した後に、形式と寸法を判定する。画素は展開しない。
+func checkSourceImage(cfg SourceConfig, content []byte) sourceRejection {
 	config, format, err := image.DecodeConfig(bytes.NewReader(content))
 	if err != nil {
-		return false
+		return sourceRejectedDecode
 	}
 	if format != formatPNG && format != formatJPEG {
-		return false
+		return sourceRejectedFormat
 	}
 	if config.Width < cfg.MinSide || config.Height < cfg.MinSide {
-		return false
+		return sourceRejectedSideTooSmall
 	}
 	if config.Width*config.Height > cfg.MaxPixels {
-		return false
+		return sourceRejectedTooManyPixels
 	}
-	return aspectWithinLimit(cfg, config.Width, config.Height)
+	if !aspectWithinLimit(cfg, config.Width, config.Height) {
+		return sourceRejectedAspectOutOfRange
+	}
+	return sourceAccepted
 }
 
 func aspectWithinLimit(cfg SourceConfig, width, height int) bool {

@@ -28,40 +28,42 @@ func sign(privateKey ed25519.PrivateKey, timestamp, body string) string {
 }
 
 // 条件: timestamp + 本文に対する正しい署名。
-// 内容: true が返る。
-func TestVerifySignature_ValidSignature_ReturnsTrue(t *testing.T) {
+// 内容: nil が返る。
+func TestVerifySignature_ValidSignature_ReturnsNil(t *testing.T) {
 	publicKey, privateKey := newKeyPair(t)
 	signature := sign(privateKey, testTimestamp, testBody)
 
 	got := ingress.VerifySignature(publicKey, signature, testTimestamp, []byte(testBody))
 
-	if !got {
-		t.Errorf("VerifySignature() = false, want true")
+	if got != nil {
+		t.Errorf("VerifySignature() = %v, want nil", got)
 	}
 }
 
-// 条件: 署名した後に本文を変更した。
-// 内容: false が返る。
-func TestVerifySignature_TamperedBody_ReturnsFalse(t *testing.T) {
+// 条件: 署名が無い、16 進でない、長さが違う、署名した後に本文を変更した。
+// 内容: それぞれ missing_header、invalid_hex、invalid_length、mismatch が返る。
+func TestVerifySignature_InvalidSignature_ReturnsReason(t *testing.T) {
 	publicKey, privateKey := newKeyPair(t)
 	signature := sign(privateKey, testTimestamp, testBody)
-
-	got := ingress.VerifySignature(publicKey, signature, testTimestamp, []byte(`{"type":2}`))
-
-	if got {
-		t.Errorf("VerifySignature() = true, want false")
+	tests := []struct {
+		name      string
+		signature string
+		body      string
+		want      ingress.SignatureError
+	}{
+		{"missing header", "", testBody, "missing_header"},
+		{"non hex", "zz", testBody, "invalid_hex"},
+		{"short signature", "abcd", testBody, "invalid_length"},
+		{"tampered body", signature, `{"type":2}`, "mismatch"},
 	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ingress.VerifySignature(publicKey, tt.signature, testTimestamp, []byte(tt.body))
 
-// 条件: 署名が 16 進でない "zz"。
-// 内容: false が返る。
-func TestVerifySignature_NonHexSignature_ReturnsFalse(t *testing.T) {
-	publicKey, _ := newKeyPair(t)
-
-	got := ingress.VerifySignature(publicKey, "zz", testTimestamp, []byte(testBody))
-
-	if got {
-		t.Errorf("VerifySignature() = true, want false")
+			if got != tt.want {
+				t.Errorf("VerifySignature() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

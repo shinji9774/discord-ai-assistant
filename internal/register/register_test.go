@@ -84,14 +84,14 @@ func TestRun_MissingBotToken_ReturnsError(t *testing.T) {
 }
 
 // 条件: application 情報の取得が 401 で失敗する。
-// 内容: 失敗理由（status）を含むエラーが返り、コマンドは 1 件も登録されない。
+// 内容: 失敗理由（status・Discord のコードと文言）を含むエラーが返り、コマンドは 1 件も登録されない。
 func TestRun_ApplicationLookupFails_ReturnsErrorWithoutRegistering(t *testing.T) {
 	cfg, fake := newConfig(t)
 	fake.FailWith(401)
 
 	err := register.Run(context.Background(), cfg, catalog.Definitions(configtest.Load(t)), &bytes.Buffer{})
 
-	want := "discord rejected the application lookup: status 401"
+	want := "discord rejected the application lookup: status 401, code 0: rejected by fake"
 	if err == nil || err.Error() != want {
 		t.Fatalf("Run() error = %v, want %q", err, want)
 	}

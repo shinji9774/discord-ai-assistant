@@ -99,6 +99,27 @@ func TestHandle_UnknownCommand_RepliesUnsupportedMessage(t *testing.T) {
 	}
 }
 
+// 条件: Registry に無いコマンド名で呼び、未対応メッセージの返信が失敗する。
+// 内容: 未対応の Warn に続けて返信の失敗を Error で記録し、返信のエラーを返す。
+func TestHandle_UnknownCommandReplyFails_LogsErrorAndReturnsIt(t *testing.T) {
+	gen := &llmtest.Generator{}
+	responder := &replytest.Responder{Errs: []error{errSend}}
+	logs := &bytes.Buffer{}
+	h := newHandler(t, gen, responder, logs)
+	inv := askInvocation()
+	inv.CommandName = "unknown"
+
+	err := h.Handle(context.Background(), inv)
+
+	assertLogRecords(t, logs, []map[string]any{
+		{"level": "WARN", "msg": "unsupported command", "command": "unknown"},
+		{"level": "ERROR", "msg": "unsupported command notification failed", "command": "unknown", "error": "send failed"},
+	})
+	if !errors.Is(err, errSend) {
+		t.Errorf("Handle() = %v, want %v", err, errSend)
+	}
+}
+
 // 条件: 生成が成功する。
 // 内容: コマンドの結果を返信し、エラーは返さない。
 func TestHandle_Success_RepliesCommandResult(t *testing.T) {
@@ -223,6 +244,74 @@ func TestHandle_ReplyFailsForConfidentialResult_LogsWithoutAnswer(t *testing.T) 
 			"command": "confidential",
 			"error":   "send failed",
 			"input":   map[string]any{"since": "2026-11-18"},
+		},
+	})
+}
+
+// guidedCommand は、案内で終える結果を返すテスト用のコマンド。
+type guidedCommand struct{}
+
+func (guidedCommand) Definition() discord.SlashCommandCreate {
+	return discord.SlashCommandCreate{Name: "guided", Description: "test"}
+}
+
+func (guidedCommand) Execute(context.Context, command.Invocation) (command.Result, error) {
+	return command.Result{
+		Text: "案内です",
+		Guidance: &command.Guidance{
+			Reason: "bot_cannot_read",
+			Attrs:  []slog.Attr{slog.String("check", "precheck"), slog.Int("discord_code", 50001)},
+		},
+	}, nil
+}
+
+func newGuidedHandler(responder *replytest.Responder, logs *bytes.Buffer) *worker.Handler {
+	return worker.NewHandler(command.NewRegistry(guidedCommand{}), responder, slog.New(slog.NewJSONHandler(logs, nil)), replyReserve)
+}
+
+func guidedInvocation() command.Invocation {
+	return command.Invocation{ApplicationID: "app1", InteractionToken: "tok1", CommandName: "guided", Options: map[string]string{"since": "2026-11-18"}}
+}
+
+// 条件: コマンドが Guidance つきの結果を返し、返信は成功する。
+// 内容: command succeeded ではなく Warn の command guided に、コマンド名・理由・診断値を記録し、入力（Options）は記録しない。
+func TestHandle_GuidedResult_LogsWarnWithReasonAndAttrsWithoutInput(t *testing.T) {
+	responder := &replytest.Responder{}
+	logs := &bytes.Buffer{}
+	h := newGuidedHandler(responder, logs)
+
+	_ = h.Handle(context.Background(), guidedInvocation())
+
+	assertLogRecords(t, logs, []map[string]any{
+		{
+			"level":        "WARN",
+			"msg":          "command guided",
+			"command":      "guided",
+			"reason":       "bot_cannot_read",
+			"check":        "precheck",
+			"discord_code": float64(50001),
+		},
+	})
+}
+
+// 条件: コマンドが Guidance つきの結果を返すが、最初の返信が失敗する。
+// 内容: command failed のログに、従来の属性に加えて reason が付く。
+func TestHandle_ReplyFailsForGuidedResult_LogsFailureWithReason(t *testing.T) {
+	responder := &replytest.Responder{Errs: []error{errSend}}
+	logs := &bytes.Buffer{}
+	h := newGuidedHandler(responder, logs)
+
+	_ = h.Handle(context.Background(), guidedInvocation())
+
+	assertLogRecords(t, logs, []map[string]any{
+		{
+			"level":   "ERROR",
+			"msg":     "command failed",
+			"command": "guided",
+			"error":   "send failed",
+			"input":   map[string]any{"since": "2026-11-18"},
+			"answer":  "案内です",
+			"reason":  "bot_cannot_read",
 		},
 	})
 }

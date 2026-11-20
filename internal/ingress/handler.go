@@ -36,6 +36,17 @@ const (
 	responseTypeChannelMsg = 4
 )
 
+// 受け付けた依頼を処理できなかったときのログ。
+const (
+	logBodyDecodeFailed        = "request body decode failed"
+	logSignatureInvalid        = "signature verification failed"
+	logInteractionDecodeFailed = "interaction decode failed"
+	logUnsupportedType         = "unsupported interaction type"
+	logKeyReason               = "reason"
+	logKeyError                = "error"
+	logKeyType                 = "type"
+)
+
 // interaction は Discord の interaction のうち、振り分けに使う最小の部分。
 type interaction struct {
 	Type           int                 `json:"type"`
@@ -82,16 +93,19 @@ func NewHandler(publicKey ed25519.PublicKey, invoker WorkerInvoker, logger *slog
 func (h *Handler) Handle(ctx context.Context, req events.LambdaFunctionURLRequest) (events.LambdaFunctionURLResponse, error) {
 	body, err := requestBody(req)
 	if err != nil {
+		h.logger.Warn(logBodyDecodeFailed, logKeyError, err.Error())
 		return textResponse(http.StatusUnauthorized, invalidSignatureBody), nil
 	}
 	signature := headerValue(req.Headers, signatureHeader)
 	timestamp := headerValue(req.Headers, timestampHeader)
-	if !VerifySignature(h.publicKey, signature, timestamp, body) {
+	if err := VerifySignature(h.publicKey, signature, timestamp, body); err != nil {
+		h.logger.Warn(logSignatureInvalid, logKeyReason, err.Error())
 		return textResponse(http.StatusUnauthorized, invalidSignatureBody), nil
 	}
 
 	var in interaction
 	if err := json.Unmarshal(body, &in); err != nil {
+		h.logger.Warn(logInteractionDecodeFailed, logKeyError, err.Error())
 		return textResponse(http.StatusBadRequest, invalidRequestBody), nil
 	}
 	switch in.Type {
@@ -100,6 +114,7 @@ func (h *Handler) Handle(ctx context.Context, req events.LambdaFunctionURLReques
 	case interactionTypeCommand:
 		return h.handleCommand(ctx, in), nil
 	default:
+		h.logger.Warn(logUnsupportedType, logKeyType, in.Type)
 		return textResponse(http.StatusBadRequest, unsupportedTypeBody), nil
 	}
 }

@@ -50,13 +50,13 @@ func TestCollect_PostsAroundPeriod_KeepsPostsWithinPeriodOldestFirst(t *testing.
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
-	if want := (summarize.Conversation{Messages: []summarize.Message{atSince, during}}); !reflect.DeepEqual(got, want) {
+	if want := (summarize.Conversation{Messages: []summarize.Message{atSince, during}, FetchedMessages: 2}); !reflect.DeepEqual(got, want) {
 		t.Errorf("Collect = %+v, want %+v", got, want)
 	}
 }
 
 // 条件: システムメッセージ、空白だけの本文、生成中の投稿、bot の投稿が混ざる。include_bots は偽。
-// 内容: 利用者の通常の投稿だけが集まる。
+// 内容: 利用者の通常の投稿だけが集まる。取得は 5 件で、本文が空白だけの 1 件を空として数える。
 func TestCollect_NonConversationPosts_ExcludesThem(t *testing.T) {
 	human := summarizetest.Post(collectPeriod.Since.Add(1*time.Minute), "佐藤", "会議は 10 時から")
 	system := summarizetest.Post(collectPeriod.Since.Add(2*time.Minute), "佐藤", "参加しました")
@@ -73,7 +73,7 @@ func TestCollect_NonConversationPosts_ExcludesThem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
-	if want := (summarize.Conversation{Messages: []summarize.Message{human}}); !reflect.DeepEqual(got, want) {
+	if want := (summarize.Conversation{Messages: []summarize.Message{human}, FetchedMessages: 5, EmptyContentMessages: 1}); !reflect.DeepEqual(got, want) {
 		t.Errorf("Collect = %+v, want %+v", got, want)
 	}
 }
@@ -91,7 +91,7 @@ func TestCollect_IncludeBots_KeepsBotPosts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
-	if want := (summarize.Conversation{Messages: []summarize.Message{human, bot}}); !reflect.DeepEqual(got, want) {
+	if want := (summarize.Conversation{Messages: []summarize.Message{human, bot}, FetchedMessages: 2}); !reflect.DeepEqual(got, want) {
 		t.Errorf("Collect = %+v, want %+v", got, want)
 	}
 }
@@ -107,7 +107,7 @@ func TestCollect_PostsOverSeveralPages_FollowsPages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
-	if want := (summarize.Conversation{Messages: posts}); !reflect.DeepEqual(got, want) || history.Reads != 3 {
+	if want := (summarize.Conversation{Messages: posts, FetchedMessages: 250}); !reflect.DeepEqual(got, want) || history.Reads != 3 {
 		t.Errorf("Collect returned %d posts with %d reads, want %d posts with 3 reads", len(got.Messages), history.Reads, len(want.Messages))
 	}
 }
@@ -124,7 +124,7 @@ func TestCollect_ReachesPostBeforeSince_StopsReading(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
-	if want := (summarize.Conversation{Messages: inPeriod}); !reflect.DeepEqual(got, want) || history.Reads != 2 {
+	if want := (summarize.Conversation{Messages: inPeriod, FetchedMessages: 150}); !reflect.DeepEqual(got, want) || history.Reads != 2 {
 		t.Errorf("Collect returned %d posts with %d reads, want %d posts with 2 reads", len(got.Messages), history.Reads, len(want.Messages))
 	}
 }
@@ -141,7 +141,7 @@ func TestCollect_MoreThanMaxMessages_KeepsNewestAndClips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
-	want := summarize.Conversation{Messages: posts[len(posts)-maxMessages:], Clipped: true}
+	want := summarize.Conversation{Messages: posts[len(posts)-maxMessages:], Clipped: true, FetchedMessages: 2 * summarize.PageSize}
 	if !reflect.DeepEqual(got, want) || history.Reads != 2 {
 		t.Errorf("Collect returned %d posts (clipped %v) with %d reads, want %d posts (clipped true) with 2 reads",
 			len(got.Messages), got.Clipped, history.Reads, len(want.Messages))

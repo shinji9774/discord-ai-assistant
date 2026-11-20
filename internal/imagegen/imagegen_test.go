@@ -9,6 +9,7 @@ import (
 	"image"
 	"image/jpeg"
 	"image/png"
+	"log/slog"
 	"reflect"
 	"strconv"
 	"strings"
@@ -189,7 +190,7 @@ func TestExecute_PromptWriterFails_ReturnsErrorWithoutGenerating(t *testing.T) {
 }
 
 // 条件: 画像生成モデルが内容を理由に拒む（ErrContentFiltered）。
-// 内容: 理由を示す文言が成功として返り（error は nil）、原文も画像も含まない。
+// 内容: 理由を示す文言が、理由 content_filtered の Guidance つきで成功として返り（error は nil）、原文も画像も含まない。
 func TestExecute_ContentFiltered_ReturnsContentNotice(t *testing.T) {
 	text := &llmtest.Generator{Result: writtenPrompt}
 	images := &imagegentest.Generator{Err: imagegen.ErrContentFiltered}
@@ -200,7 +201,10 @@ func TestExecute_ContentFiltered_ReturnsContentNotice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	want := command.Result{Text: "内容が原因で、画像を生成できませんでした。文章または元にする画像を変えて、もう一度実行してください。"}
+	want := command.Result{
+		Text:     "内容が原因で、画像を生成できませんでした。文章または元にする画像を変えて、もう一度実行してください。",
+		Guidance: &command.Guidance{Reason: "content_filtered"},
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Execute() = %+v, want %+v", got, want)
 	}
@@ -288,8 +292,16 @@ func userTextsOf(text *llmtest.Generator) []string {
 	return userTexts
 }
 
+// sourceNotAcceptable は、元画像が受け付けられなかったときの Result。rejection は満たさなかった条件。
+func sourceNotAcceptable(rejection string) command.Result {
+	return command.Result{
+		Text:     sourceNotice,
+		Guidance: &command.Guidance{Reason: "source_not_acceptable", Attrs: []slog.Attr{slog.String("rejection", rejection)}},
+	}
+}
+
 // 条件: Discord が伝えた元画像の大きさが上限（10,000,000 バイト）を 1 バイト超える。
-// 内容: 受け付けられない旨の文言が成功として返り（error は nil）、取得もプロンプトの作成も生成もしない。
+// 内容: 受け付けられない旨の文言が理由 size_over_limit つきで成功として返り（error は nil）、取得もプロンプトの作成も生成もしない。
 func TestExecute_SourceTooLarge_ReturnsSourceNoticeWithoutFetching(t *testing.T) {
 	text := &llmtest.Generator{Result: writtenPrompt}
 	images := &imagegentest.Generator{Image: pngBytes}
@@ -301,7 +313,7 @@ func TestExecute_SourceTooLarge_ReturnsSourceNoticeWithoutFetching(t *testing.T)
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if want := (command.Result{Text: sourceNotice}); !reflect.DeepEqual(got, want) {
+	if want := sourceNotAcceptable("size_over_limit"); !reflect.DeepEqual(got, want) {
 		t.Errorf("Execute() = %+v, want %+v", got, want)
 	}
 	if len(fetcher.URLs) != 0 || len(text.Requests) != 0 || len(images.SketchRequests) != 0 {
@@ -310,7 +322,7 @@ func TestExecute_SourceTooLarge_ReturnsSourceNoticeWithoutFetching(t *testing.T)
 }
 
 // 条件: 取得した元画像が画像として読めない（テキスト）。
-// 内容: 受け付けられない旨の文言が成功として返り（error は nil）、プロンプトの作成も生成もしない。
+// 内容: 受け付けられない旨の文言が理由 decode_failed つきで成功として返り（error は nil）、プロンプトの作成も生成もしない。
 func TestExecute_SourceNotImage_ReturnsSourceNoticeWithoutWritingPrompt(t *testing.T) {
 	notImage := []byte("not an image")
 	text := &llmtest.Generator{Result: writtenPrompt}
@@ -322,7 +334,7 @@ func TestExecute_SourceNotImage_ReturnsSourceNoticeWithoutWritingPrompt(t *testi
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if want := (command.Result{Text: sourceNotice}); !reflect.DeepEqual(got, want) {
+	if want := sourceNotAcceptable("decode_failed"); !reflect.DeepEqual(got, want) {
 		t.Errorf("Execute() = %+v, want %+v", got, want)
 	}
 	if len(text.Requests) != 0 || len(images.SketchRequests) != 0 {

@@ -1,6 +1,7 @@
 package ingress_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
@@ -10,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
@@ -77,6 +79,34 @@ func newHandler(t *testing.T, invoker ingress.WorkerInvoker) (*ingress.Handler, 
 	return ingress.NewHandler(publicKey, invoker, logger), privateKey
 }
 
+// newLoggedHandler は newHandler と同じ Handler を、JSON のログを buffer に書く logger で作る。
+func newLoggedHandler(t *testing.T, invoker ingress.WorkerInvoker) (*ingress.Handler, ed25519.PrivateKey, *bytes.Buffer) {
+	t.Helper()
+	publicKey, privateKey := newKeyPair(t)
+	logs := &bytes.Buffer{}
+	return ingress.NewHandler(publicKey, invoker, slog.New(slog.NewJSONHandler(logs, nil))), privateKey, logs
+}
+
+// assertLogRecords は JSON Lines のログから time を除いて全体を比較する。
+func assertLogRecords(t *testing.T, logs *bytes.Buffer, want []map[string]any) {
+	t.Helper()
+	got := []map[string]any{}
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		record := map[string]any{}
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("invalid log line %q: %v", line, err)
+		}
+		delete(record, "time")
+		got = append(got, record)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("log records = %v, want %v", got, want)
+	}
+}
+
 func jsonResponse(status int, body string) events.LambdaFunctionURLResponse {
 	return events.LambdaFunctionURLResponse{
 		StatusCode: status,
@@ -126,10 +156,10 @@ func TestHandle_ValidPing_ReturnsPong(t *testing.T) {
 }
 
 // 条件: 別の鍵で署名したコマンド。
-// 内容: 401 が返り、worker は起動されない。
+// 内容: 401 が返り、worker は起動されず、理由 mismatch を Warn で記録する。
 func TestHandle_InvalidSignature_Returns401WithoutInvokingWorker(t *testing.T) {
 	invoker := &recordingInvoker{}
-	handler, _ := newHandler(t, invoker)
+	handler, _, logs := newLoggedHandler(t, invoker)
 	_, otherKey := newKeyPair(t)
 	req := signedRequest(t, otherKey, commandBody)
 
@@ -140,18 +170,24 @@ func TestHandle_InvalidSignature_Returns401WithoutInvokingWorker(t *testing.T) {
 	if recorded := invoker.recorded(); len(recorded) != 0 {
 		t.Errorf("invocations = %+v, want empty", recorded)
 	}
+	assertLogRecords(t, logs, []map[string]any{
+		{"level": "WARN", "msg": "signature verification failed", "reason": "mismatch"},
+	})
 }
 
 // 条件: 署名ヘッダがない。
-// 内容: 401 が返る。
+// 内容: 401 が返り、理由 missing_header を Warn で記録する。
 func TestHandle_MissingSignatureHeaders_Returns401(t *testing.T) {
-	handler, _ := newHandler(t, &recordingInvoker{})
+	handler, _, logs := newLoggedHandler(t, &recordingInvoker{})
 	req := events.LambdaFunctionURLRequest{Body: pingBody}
 
 	got, _ := handler.Handle(context.Background(), req)
 
 	want := events.LambdaFunctionURLResponse{StatusCode: http.StatusUnauthorized, Body: "invalid request signature"}
 	assertResponse(t, got, want)
+	assertLogRecords(t, logs, []map[string]any{
+		{"level": "WARN", "msg": "signature verification failed", "reason": "missing_header"},
+	})
 }
 
 // 条件: 正しい署名の translate コマンド。
@@ -247,22 +283,25 @@ func TestHandle_Base64EncodedBody_VerifiesDecodedBody(t *testing.T) {
 }
 
 // 条件: 署名は正しいが type が 3。
-// 内容: 400 が返る。
+// 内容: 400 が返り、type の値を Warn で記録する。
 func TestHandle_UnsupportedInteractionType_Returns400(t *testing.T) {
-	handler, privateKey := newHandler(t, &recordingInvoker{})
+	handler, privateKey, logs := newLoggedHandler(t, &recordingInvoker{})
 	req := signedRequest(t, privateKey, `{"type":3}`)
 
 	got, _ := handler.Handle(context.Background(), req)
 
 	want := events.LambdaFunctionURLResponse{StatusCode: http.StatusBadRequest, Body: "unsupported interaction type"}
 	assertResponse(t, got, want)
+	assertLogRecords(t, logs, []map[string]any{
+		{"level": "WARN", "msg": "unsupported interaction type", "type": float64(3)},
+	})
 }
 
 // 条件: IsBase64Encoded が真で、本文が base64 として不正。
-// 内容: 署名を検証できないものとして 401 が返り、worker は起動されない。
+// 内容: 署名を検証できないものとして 401 が返り、worker は起動されず、デコードの失敗を Warn で記録する。
 func TestHandle_InvalidBase64Body_Returns401WithoutInvokingWorker(t *testing.T) {
 	invoker := &recordingInvoker{}
-	handler, privateKey := newHandler(t, invoker)
+	handler, privateKey, logs := newLoggedHandler(t, invoker)
 	req := signedRequest(t, privateKey, pingBody)
 	req.Body = "!!not-base64!!"
 	req.IsBase64Encoded = true
@@ -274,18 +313,24 @@ func TestHandle_InvalidBase64Body_Returns401WithoutInvokingWorker(t *testing.T) 
 	if recorded := invoker.recorded(); len(recorded) != 0 {
 		t.Errorf("invocations = %+v, want empty", recorded)
 	}
+	assertLogRecords(t, logs, []map[string]any{
+		{"level": "WARN", "msg": "request body decode failed", "error": "illegal base64 data at input byte 0"},
+	})
 }
 
 // 条件: 正しく署名された、JSON として不正な本文。
-// 内容: 400 invalid request body が返る。
+// 内容: 400 invalid request body が返り、デコードのエラー文を（本文なしで）Warn で記録する。
 func TestHandle_MalformedJSON_Returns400(t *testing.T) {
-	handler, privateKey := newHandler(t, &recordingInvoker{})
+	handler, privateKey, logs := newLoggedHandler(t, &recordingInvoker{})
 	req := signedRequest(t, privateKey, `{"type":`)
 
 	got, _ := handler.Handle(context.Background(), req)
 
 	want := events.LambdaFunctionURLResponse{StatusCode: http.StatusBadRequest, Body: "invalid request body"}
 	assertResponse(t, got, want)
+	assertLogRecords(t, logs, []map[string]any{
+		{"level": "WARN", "msg": "interaction decode failed", "error": "unexpected end of JSON input"},
+	})
 }
 
 // 条件: visibility に private を指定したコマンド。

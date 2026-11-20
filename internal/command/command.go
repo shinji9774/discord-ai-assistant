@@ -2,6 +2,7 @@ package command
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/disgoorg/disgo/discord"
 )
@@ -38,6 +39,20 @@ type Result struct {
 	Files  []File
 
 	Confidential bool // 真なら、worker は失敗ログに Text を出さない
+
+	Guidance *Guidance // 非 nil なら、処理を終えた理由が案内だった（失敗ではない）。worker が理由をログに出す
+}
+
+// Guidance は、コマンドが利用者への案内で処理を終えた理由。worker が診断のためにログへ出す。
+// Attrs に本文・秘密情報（token、URL、会話、利用者の入力文）を入れてはならない。
+type Guidance struct {
+	Reason string      // 理由。snake_case の固定値で、各コマンドのパッケージで定数にする
+	Attrs  []slog.Attr // 原因の切り分けに使う診断値
+}
+
+// Guided は、利用者への案内で処理を終えるときの Result を作る。reason と attrs は worker のログ用で、利用者には見えない。
+func Guided(text, reason string, attrs ...slog.Attr) Result {
+	return Result{Text: text, Guidance: &Guidance{Reason: reason, Attrs: attrs}}
 }
 
 // TextFormat は Result.Text の記法。長文を添付に回すときのファイル形式を決める。

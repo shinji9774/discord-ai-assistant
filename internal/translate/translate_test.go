@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
@@ -114,7 +115,7 @@ func TestExecute_NoTextNorFile_ReturnsGuidanceWithoutTranslating(t *testing.T) {
 
 	got, err := cmd.Execute(context.Background(), invocation(map[string]string{}))
 
-	want := command.Result{Text: "翻訳する文章（text）かファイル（file）を指定してください。"}
+	want := command.Result{Text: "翻訳する文章（text）かファイル（file）を指定してください。", Guidance: &command.Guidance{Reason: "no_input"}}
 	if err != nil || !reflect.DeepEqual(got, want) || len(fake.Calls) != 0 || len(fake.DocumentCalls) != 0 {
 		t.Errorf("Execute() = %+v, %v, calls = %+v %+v, want %+v and no calls", got, err, fake.Calls, fake.DocumentCalls, want)
 	}
@@ -129,7 +130,7 @@ func TestExecute_BothTextAndFile_ReturnsGuidanceWithoutTranslating(t *testing.T)
 
 	got, err := cmd.Execute(context.Background(), fileInvocation(map[string]string{"text": "Hello"}, attachment("memo.txt", 10)))
 
-	want := command.Result{Text: "text と file はどちらか一方だけ指定してください。"}
+	want := command.Result{Text: "text と file はどちらか一方だけ指定してください。", Guidance: &command.Guidance{Reason: "both_inputs"}}
 	if err != nil || !reflect.DeepEqual(got, want) || len(fake.Calls) != 0 || len(fake.DocumentCalls) != 0 || len(fetcher.URLs) != 0 {
 		t.Errorf("Execute() = %+v, %v, want %+v and no calls", got, err, want)
 	}
@@ -144,7 +145,10 @@ func TestExecute_UnsupportedFileExtension_ReturnsGuidanceWithoutFetching(t *test
 
 	got, err := cmd.Execute(context.Background(), fileInvocation(nil, attachment("memo.pdf", 10)))
 
-	want := command.Result{Text: "対応しているファイル形式は .txt / .html / .docx です。"}
+	want := command.Result{
+		Text:     "対応しているファイル形式は .txt / .html / .docx です。",
+		Guidance: &command.Guidance{Reason: "unsupported_extension", Attrs: []slog.Attr{slog.String("extension", ".pdf")}},
+	}
 	if err != nil || !reflect.DeepEqual(got, want) || len(fake.DocumentCalls) != 0 || len(fetcher.URLs) != 0 {
 		t.Errorf("Execute() = %+v, %v, want %+v and no calls", got, err, want)
 	}
@@ -159,7 +163,10 @@ func TestExecute_FileOverSizeLimit_ReturnsGuidanceWithoutFetching(t *testing.T) 
 
 	got, err := cmd.Execute(context.Background(), fileInvocation(nil, attachment("memo.txt", 100001)))
 
-	want := command.Result{Text: "ファイルは 100 KB 以下にしてください。"}
+	want := command.Result{
+		Text:     "ファイルは 100 KB 以下にしてください。",
+		Guidance: &command.Guidance{Reason: "file_too_large", Attrs: []slog.Attr{slog.Int("size_bytes", 100001), slog.Int("max_bytes", 100000)}},
+	}
 	if err != nil || !reflect.DeepEqual(got, want) || len(fake.DocumentCalls) != 0 || len(fetcher.URLs) != 0 {
 		t.Errorf("Execute() = %+v, %v, want %+v and no calls", got, err, want)
 	}
