@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: discord-ai-assistant のアプリ本体（ingress、worker、voicereporter の Lambda 関数、Function URL、録音の一時的な置き場）
+Description: discord-ai-assistant のアプリ本体（ingress、worker、voicereporter、voicefailure、recordingfailure の Lambda 関数、Function URL、録音タスク、録音の一時的な置き場）
 
 Parameters:
   ImageUri:
@@ -37,6 +37,18 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub /aws/lambda/${AWS::StackName}-voicefailure
+      RetentionInDays: 30
+
+  RecorderLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${AWS::StackName}-recorder
+      RetentionInDays: 30
+
+  RecordingFailureLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-recordingfailure
       RetentionInDays: 30
 
   # /summarize-voice の音声と途中結果の一時的な置き場。公開しない。バケットポリシーとバージョニングは使わない
@@ -145,6 +157,24 @@ Resources:
                 Condition:
                   StringEquals:
                     transcribe:OutputBucketName: !Ref VoiceBucket
+              # 録音タスクを起動する。起動先は録音用のクラスターに限る
+              - Sid: RunRecorderTask
+                Effect: Allow
+                Action: ecs:RunTask
+                Resource: !Ref RecorderTaskDefinition
+                Condition:
+                  ArnEquals:
+                    ecs:cluster: !GetAtt RecorderCluster.Arn
+              # RunTask は、タスク定義のタスクロールと実行ロールを ECS へ渡す
+              - Sid: PassRecorderRoles
+                Effect: Allow
+                Action: iam:PassRole
+                Resource:
+                  - !GetAtt RecorderTaskRole.Arn
+                  - !GetAtt RecorderExecutionRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: ecs-tasks.amazonaws.com
 
   VoiceReporterRole:
     Type: AWS::IAM::Role
@@ -243,6 +273,100 @@ Resources:
                 Action: ssm:GetParameter
                 Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${BotTokenParameterName}
 
+  # 録音タスクがイメージを取得し、ログを書く
+  RecorderExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  RecorderTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+      Policies:
+        - PolicyName: recorder
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # ロックと印を読み書きし、音声とマニフェストを置く。Transcribe は録音タスクの権限で音声を読み、結果を書く
+              - Sid: StoreVoiceData
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                Resource: !Sub ${VoiceBucket.Arn}/*
+              # ないオブジェクトを 403 ではなく 404 として受け取るために要る
+              - Sid: ListVoiceData
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt VoiceBucket.Arn
+              # StartTranscriptionJob はジョブの ARN で絞れないため、結果の置き場のバケットで絞る
+              - Sid: StartTranscription
+                Effect: Allow
+                Action: transcribe:StartTranscriptionJob
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    transcribe:OutputBucketName: !Ref VoiceBucket
+              - Sid: ReadBotToken
+                Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${BotTokenParameterName}
+
+  RecordingFailureRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service: lambda.amazonaws.com
+      Policies:
+        - PolicyName: recordingfailure
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: WriteOwnLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt RecordingFailureLogGroup.Arn
+              # ロックと開始の印を読み、録音のデータとロックを消す
+              - Sid: StoreVoiceData
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                Resource: !Sub ${VoiceBucket.Arn}/*
+              # ないオブジェクトを 403 ではなく 404 として受け取るために要る
+              - Sid: ListVoiceData
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt VoiceBucket.Arn
+              - Sid: ReadBotToken
+                Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${BotTokenParameterName}
+
   IngressFunction:
     Type: AWS::Lambda::Function
     DependsOn: IngressLogGroup
@@ -285,6 +409,10 @@ Resources:
         Variables:
           BOT_TOKEN_PARAMETER_NAME: !Ref BotTokenParameterName
           VOICE_BUCKET_NAME: !Ref VoiceBucket
+          RECORDER_CLUSTER_ARN: !GetAtt RecorderCluster.Arn
+          RECORDER_TASK_DEFINITION_ARN: !Ref RecorderTaskDefinition
+          RECORDER_SUBNET_IDS: !Join [",", [!Ref RecorderSubnetA, !Ref RecorderSubnetB]]
+          RECORDER_SECURITY_GROUP_ID: !Ref RecorderSecurityGroup
 
   # 非同期呼び出しの再試行を止める（同じコマンドを二重に実行しない）
   WorkerEventInvokeConfig:
@@ -368,6 +496,162 @@ Resources:
         Variables:
           BOT_TOKEN_PARAMETER_NAME: !Ref BotTokenParameterName
           VOICE_BUCKET_NAME: !Ref VoiceBucket
+
+  # 録音タスクのネットワーク。Discord へ出るだけなので、パブリック IP でパブリックサブネットに置く（NAT は置かない）
+  RecorderVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.20.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+
+  RecorderInternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  RecorderGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref RecorderVpc
+      InternetGatewayId: !Ref RecorderInternetGateway
+
+  RecorderSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref RecorderVpc
+      CidrBlock: 10.20.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+
+  RecorderSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref RecorderVpc
+      CidrBlock: 10.20.1.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+
+  RecorderRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref RecorderVpc
+
+  RecorderDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: RecorderGatewayAttachment
+    Properties:
+      RouteTableId: !Ref RecorderRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref RecorderInternetGateway
+
+  RecorderSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref RecorderSubnetA
+      RouteTableId: !Ref RecorderRouteTable
+
+  RecorderSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref RecorderSubnetB
+      RouteTableId: !Ref RecorderRouteTable
+
+  # 内向きは許可しない。外向きは Discord と AWS の API へ出る
+  RecorderSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: recorder task - no inbound, all outbound
+      VpcId: !Ref RecorderVpc
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+
+  # 録音専用のクラスター。録音していない間はタスクが無く、課金されない
+  RecorderCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${AWS::StackName}-recorder
+
+  # エフェメラルストレージは既定の 20 GiB を使う（録音中の音声を置く）
+  RecorderTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${AWS::StackName}-recorder
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: "256"
+      Memory: "512"
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt RecorderExecutionRole.Arn
+      TaskRoleArn: !GetAtt RecorderTaskRole.Arn
+      ContainerDefinitions:
+        - Name: recorder
+          Image: !Ref ImageUri
+          EntryPoint: ["/recorder"]
+          Essential: true
+          Environment:
+            - Name: BOT_TOKEN_PARAMETER_NAME
+              Value: !Ref BotTokenParameterName
+            - Name: VOICE_BUCKET_NAME
+              Value: !Ref VoiceBucket
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref RecorderLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: recorder
+
+  RecordingFailureFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: RecordingFailureLogGroup
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-recordingfailure
+      PackageType: Image
+      Code:
+        ImageUri: !Ref ImageUri
+      ImageConfig:
+        EntryPoint: ["/recordingfailure"]
+      Architectures: [x86_64]
+      Timeout: 60
+      MemorySize: 256
+      Role: !GetAtt RecordingFailureRole.Arn
+      Environment:
+        Variables:
+          BOT_TOKEN_PARAMETER_NAME: !Ref BotTokenParameterName
+          VOICE_BUCKET_NAME: !Ref VoiceBucket
+
+  # 失敗の投稿に失敗したときだけ、同じイベントで 2 回までやり直す（ロックの解除の失敗ではエラーにしない）
+  # 経過時間の上限は VoiceReporter と同じ。使い切った後の宛先は置かない
+  RecordingFailureEventInvokeConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref RecordingFailureFunction
+      Qualifier: $LATEST
+      MaximumRetryAttempts: 2
+      MaximumEventAgeInSeconds: 3600
+
+  # 録音タスクが止まったら recordingfailure を呼ぶ。recorder が引き渡しを終えて exit 0 で止まったときは、残ったロックを解除するだけにする
+  RecorderStoppedRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: 録音タスクの停止を recordingfailure に伝える
+      State: ENABLED
+      EventPattern:
+        source: ["aws.ecs"]
+        detail-type: ["ECS Task State Change"]
+        detail:
+          clusterArn: [!GetAtt RecorderCluster.Arn]
+          lastStatus: ["STOPPED"]
+      Targets:
+        - Id: recordingfailure
+          Arn: !GetAtt RecordingFailureFunction.Arn
+
+  RecordingFailureEventPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref RecordingFailureFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt RecorderStoppedRule.Arn
 
   IngressFunctionUrl:
     Type: AWS::Lambda::Url

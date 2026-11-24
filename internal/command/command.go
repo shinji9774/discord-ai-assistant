@@ -85,3 +85,9 @@ type SecretInput interface {
 	Command
 	HasSecretInput()
 }
+
+// PrivateReply は、返信を常に実行者だけに見せるコマンドの印。入力はログに出してよい（SecretInput とは別の意味）。
+type PrivateReply interface {
+	Command
+	RepliesPrivately()
+}

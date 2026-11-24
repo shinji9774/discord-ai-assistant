@@ -71,18 +71,18 @@ func (r *recordingInvoker) recorded() []command.Invocation {
 	return append([]command.Invocation(nil), r.invocations...)
 }
 
-// secretCommands は、名前の集合で答える SecretInputs の fake。
-type secretCommands map[string]bool
+// privateCommands は、名前の集合で答える PrivateReplies の fake。
+type privateCommands map[string]bool
 
-func (s secretCommands) HasSecretInput(commandName string) bool {
-	return s[commandName]
+func (p privateCommands) RepliesPrivately(commandName string) bool {
+	return p[commandName]
 }
 
-// cmd/ingress が渡す *command.Registry が SecretInputs を満たすことを、コンパイル時に確かめる。
-var _ ingress.SecretInputs = (*command.Registry)(nil)
+// cmd/ingress が渡す *command.Registry が PrivateReplies を満たすことを、コンパイル時に確かめる。
+var _ ingress.PrivateReplies = (*command.Registry)(nil)
 
-// testSecretInputs は、テストの Handler が秘密入力として扱うコマンド。
-var testSecretInputs = secretCommands{secretCommandName: true}
+// testPrivateReplies は、テストの Handler が返信を非公開にするコマンド。
+var testPrivateReplies = privateCommands{secretCommandName: true}
 
 func signedRequest(t *testing.T, privateKey ed25519.PrivateKey, body string) events.LambdaFunctionURLRequest {
 	t.Helper()
@@ -99,7 +99,7 @@ func newHandler(t *testing.T, invoker ingress.WorkerInvoker) (*ingress.Handler, 
 	t.Helper()
 	publicKey, privateKey := newKeyPair(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return ingress.NewHandler(publicKey, invoker, testSecretInputs, logger), privateKey
+	return ingress.NewHandler(publicKey, invoker, testPrivateReplies, logger), privateKey
 }
 
 // newLoggedHandler は newHandler と同じ Handler を、JSON のログを buffer に書く logger で作る。
@@ -107,7 +107,7 @@ func newLoggedHandler(t *testing.T, invoker ingress.WorkerInvoker) (*ingress.Han
 	t.Helper()
 	publicKey, privateKey := newKeyPair(t)
 	logs := &bytes.Buffer{}
-	return ingress.NewHandler(publicKey, invoker, testSecretInputs, slog.New(slog.NewJSONHandler(logs, nil))), privateKey, logs
+	return ingress.NewHandler(publicKey, invoker, testPrivateReplies, slog.New(slog.NewJSONHandler(logs, nil))), privateKey, logs
 }
 
 // assertLogRecords は JSON Lines のログから time を除いて全体を比較する。

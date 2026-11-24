@@ -15,6 +15,7 @@ import (
 	"discord-ai-assistant/internal/llm"
 	"discord-ai-assistant/internal/summarize"
 	"discord-ai-assistant/internal/translate"
+	"discord-ai-assistant/internal/voicerecording"
 	"discord-ai-assistant/internal/voicesummary"
 	"discord-ai-assistant/internal/websearch"
 )
@@ -28,18 +29,20 @@ type Dependencies struct {
 	ImageGenerator imagegen.Generator
 	Translator     translate.Translator
 	Fetcher        translate.AttachmentFetcher
-	History        summarize.HistoryReader   // /summarize が会話履歴を読む
-	Voice          voicesummary.Dependencies // /summarize-voice が録音を受け付ける
-	BotToken       string                    // 土台のコマンドは使わない。後続 spec のコマンドが受け取る
+	History        summarize.HistoryReader     // /summarize が会話履歴を読む
+	Voice          voicesummary.Dependencies   // /summarize-voice が録音を受け付ける
+	Recording      voicerecording.Dependencies // /record-start・/record-stop・/record-optout が録音を扱う
+	BotToken       string                      // 土台のコマンドは使わない。後続 spec のコマンドが受け取る
 }
 
-// Definitions は Discord へ登録する全コマンドの定義を、translate、ask、image、summarize、summarize-voice、help の順に返す。
+// Definitions は Discord へ登録する全コマンドの定義を、translate、ask、image、summarize、summarize-voice、record-start、record-stop、record-optout、help の順に返す。
 // help は ingress が応答するため Registry には含めず、ここで足す。
 func Definitions(cfg config.Config) []discord.ApplicationCommandCreate {
 	return append(New(Dependencies{}, cfg).Definitions(), help.Definition())
 }
 
-// New は translate、ask、image、summarize、summarize-voice の順にコマンドを登録した Registry を返す。
+// New は translate、ask、image、summarize、summarize-voice、record-start、record-stop、record-optout の順に
+// コマンドを登録した Registry を返す。
 func New(deps Dependencies, cfg config.Config) *command.Registry {
 	return command.NewRegistry(
 		translate.New(deps.Translator, deps.Fetcher, cfg.Translate),
@@ -47,5 +50,8 @@ func New(deps Dependencies, cfg config.Config) *command.Registry {
 		imagegen.New(deps.Generator, deps.ImageGenerator, deps.Fetcher, cfg.Image),
 		summarize.New(deps.Generator, deps.History, cfg.Summarize, time.Now),
 		voicesummary.New(deps.Voice, cfg.SummarizeVoice),
+		voicerecording.NewStartCommand(deps.Recording, cfg.Recording),
+		voicerecording.NewStopCommand(deps.Recording),
+		voicerecording.NewOptOutCommand(deps.Recording),
 	)
 }

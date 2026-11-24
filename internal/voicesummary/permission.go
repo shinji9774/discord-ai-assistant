@@ -7,10 +7,11 @@ const basePostPermissions = discord.PermissionViewChannel | discord.PermissionAt
 
 // missingPostPermissions は、投稿に足りない権限があれば true を返す。
 func missingPostPermissions(channelType discord.ChannelType, perms discord.Permissions) bool {
-	return !perms.Has(requiredPostPermissions(channelType))
+	return !perms.Has(RequiredPostPermissions(channelType))
 }
 
-func requiredPostPermissions(channelType discord.ChannelType) discord.Permissions {
+// RequiredPostPermissions は、チャンネルの種類ごとの、結果の投稿に要る bot の権限を返す。voicerecording も録音の投稿の確認に使う。
+func RequiredPostPermissions(channelType discord.ChannelType) discord.Permissions {
 	required := basePostPermissions | sendPermission(channelType)
 	if isVoiceChannel(channelType) {
 		required |= discord.PermissionConnect

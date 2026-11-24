@@ -86,21 +86,21 @@ type messageResponse struct {
 	} `json:"data"`
 }
 
-// SecretInputs は、入力に秘密を含むコマンドかを答える。*command.Registry が満たす。
-type SecretInputs interface {
-	HasSecretInput(commandName string) bool
+// PrivateReplies は、返信を実行者だけに見せるコマンドかを答える。*command.Registry が満たす。
+type PrivateReplies interface {
+	RepliesPrivately(commandName string) bool
 }
 
 // Handler は Discord の interaction を受け、署名検証と振り分けを行う。
 type Handler struct {
 	publicKey ed25519.PublicKey
 	invoker   WorkerInvoker
-	secrets   SecretInputs
+	replies   PrivateReplies
 	logger    *slog.Logger
 }
 
-func NewHandler(publicKey ed25519.PublicKey, invoker WorkerInvoker, secrets SecretInputs, logger *slog.Logger) *Handler {
-	return &Handler{publicKey: publicKey, invoker: invoker, secrets: secrets, logger: logger}
+func NewHandler(publicKey ed25519.PublicKey, invoker WorkerInvoker, replies PrivateReplies, logger *slog.Logger) *Handler {
+	return &Handler{publicKey: publicKey, invoker: invoker, replies: replies, logger: logger}
 }
 
 // Handle は署名を検証したうえで、interaction の種類に応じた応答を返す。
@@ -138,8 +138,8 @@ func (h *Handler) handleCommand(ctx context.Context, in interaction) events.Lamb
 		return jsonResponse(ephemeralBody(help.Usage))
 	}
 	inv := toInvocation(in)
-	// 入力に秘密を含むコマンドは、visibility の指定によらず実行者だけに応答する（入力をほかの参加者に見せない）。
-	private := command.IsPrivate(inv.Options) || h.secrets.HasSecretInput(inv.CommandName)
+	// 返信を非公開にするコマンド（入力に秘密を含むコマンドを含む）は、visibility の指定によらず実行者だけに応答する。
+	private := command.IsPrivate(inv.Options) || h.replies.RepliesPrivately(inv.CommandName)
 	if err := h.invoker.InvokeAsync(ctx, inv); err != nil {
 		h.logger.Error(logWorkerInvokeFailed, "command", inv.CommandName, "error", err)
 		return jsonResponse(failureBody(private))

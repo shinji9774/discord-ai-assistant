@@ -11,6 +11,7 @@ import (
 	"discord-ai-assistant/internal/imagegen"
 	"discord-ai-assistant/internal/summarize"
 	"discord-ai-assistant/internal/translate"
+	"discord-ai-assistant/internal/voicerecording"
 	"discord-ai-assistant/internal/voicesummary"
 )
 
@@ -113,6 +114,7 @@ func defaultConfig() config.Config {
 			MaxOutputTokens:     4096,
 			SystemPrompt:        defaultSummarizeVoiceSystemPrompt,
 		},
+		Recording: voicerecording.Config{MaxRecordingMinutes: 180},
 	}
 }
 
@@ -155,6 +157,7 @@ var emptyConfigProblems = []string{
 	"summarize_voice.max_recording_minutes: must be 1 or greater (got 0)",
 	"summarize_voice.max_output_tokens: must be 1 or greater (got 0)",
 	"summarize_voice.system_prompt: must not be empty",
+	"recording.max_recording_minutes: must be 1 or greater (got 0)",
 }
 
 // embeddedYAMLWith は、同梱の config.yaml の中の before を after に置き換えた YAML を返す。
@@ -249,6 +252,20 @@ func TestParse_MaxRecordingMinutesOverTranscribeLimit_ReturnsError(t *testing.T)
 	_, err := config.Parse(data)
 
 	if got, want := errorText(err), "invalid config:\nsummarize_voice.max_recording_minutes: must be 480 or less (got 481)"; got != want {
+		t.Errorf("Parse error = %q, want %q", got, want)
+	}
+}
+
+// 条件: 録音（/record-start）の上限が、Amazon Transcribe の上限（480 分）を超える設定。
+// 内容: recording 節のキーを名指ししたエラーになる。
+func TestParse_RecordingMaxMinutesOverTranscribeLimit_ReturnsError(t *testing.T) {
+	data := embeddedYAMLWith(t,
+		"recording:\n  # 1 回の録音の上限（分）。上限に達すると録音を終える。Amazon Transcribe の上限（480 分）以下にする\n  max_recording_minutes: 180",
+		"recording:\n  # 1 回の録音の上限（分）。上限に達すると録音を終える。Amazon Transcribe の上限（480 分）以下にする\n  max_recording_minutes: 481")
+
+	_, err := config.Parse(data)
+
+	if got, want := errorText(err), "invalid config:\nrecording.max_recording_minutes: must be 480 or less (got 481)"; got != want {
 		t.Errorf("Parse error = %q, want %q", got, want)
 	}
 }

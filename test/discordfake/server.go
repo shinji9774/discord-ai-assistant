@@ -35,6 +35,13 @@ const (
 	limitQuery                = "limit"
 )
 
+const (
+	apiVersionPrefix = "/api/v10"
+	guildsSegment    = "guilds"
+	membersSegment   = "members"
+	routeSeparator   = " "
+)
+
 // FakeApplicationID は GET /applications/@me が返す application id。disgo は snowflake を要求するため数字だけにする。
 const FakeApplicationID = "123456789012345678"
 
@@ -88,6 +95,16 @@ type historyRejection struct {
 	code   int
 }
 
+// NicknameChange は、bot が自分の表示名を変えた依頼。Nick が空なら表示名を消した。
+type NicknameChange struct {
+	GuildID string
+	Nick    string
+}
+
+type nicknamePayload struct {
+	Nick *string `json:"nick"`
+}
+
 // messagePayload は、送られたメッセージの JSON のうち fake が記録する項目。
 type messagePayload struct {
 	Content         string `json:"content"`
@@ -112,6 +129,9 @@ type Server struct {
 	attachments            map[string]string           // URL のパス → 中身
 	history                map[string][]HistoryMessage // チャンネル ID → 投稿
 	historyRejections      map[string]historyRejection // チャンネル ID → 拒み方
+	registered             map[string]string           // "{method} {path}" → JSON の本文
+	pathRejections         map[string]historyRejection // "{method} {path}" → 拒み方
+	nicknameChanges        []NicknameChange
 }
 
 func New() *Server {
@@ -121,6 +141,9 @@ func New() *Server {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.serveRegistered(w, r) {
+		return
+	}
 	segments := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	switch {
 	case r.Method == http.MethodPatch && isResponseUpdatePath(segments):
@@ -305,6 +328,59 @@ func (s *Server) serveAttachment(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, content)
 }
 
+func routeKey(method, path string) string {
+	return method + routeSeparator + path
+}
+
+// serveRegistered は、RejectPath・AddJSON で登録したパスと、bot の表示名の変更に応える。応えたら真を返す。
+func (s *Server) serveRegistered(w http.ResponseWriter, r *http.Request) bool {
+	path := strings.TrimPrefix(r.URL.Path, apiVersionPrefix)
+	route := routeKey(r.Method, path)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rejection, ok := s.pathRejections[route]; ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(rejection.status)
+		_, _ = fmt.Fprintf(w, historyRejectedBodyFormat, rejection.code)
+		return true
+	}
+	if body, ok := s.registered[route]; ok {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+		return true
+	}
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	if r.Method == http.MethodPatch && isCurrentMemberPath(segments) {
+		s.serveNicknameChange(w, r, segments[1])
+		return true
+	}
+	return false
+}
+
+// isCurrentMemberPath は /guilds/{g}/members/@me かを返す。
+func isCurrentMemberPath(segments []string) bool {
+	return len(segments) == 4 && segments[0] == guildsSegment && segments[2] == membersSegment && segments[3] == currentAppSeg
+}
+
+// serveNicknameChange は PATCH /guilds/{g}/members/@me に応える。s.mu を保持して呼ぶ。
+func (s *Server) serveNicknameChange(w http.ResponseWriter, r *http.Request, guildID string) {
+	var payload nicknamePayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	nick := ""
+	if payload.Nick != nil {
+		nick = *payload.Nick
+	}
+	s.nicknameChanges = append(s.nicknameChanges, NicknameChange{GuildID: guildID, Nick: nick})
+	writeJSON(w, map[string]any{
+		"user":  map[string]any{"id": FakeApplicationID, "username": "fake-bot", "bot": true},
+		"nick":  payload.Nick,
+		"roles": []string{},
+	})
+}
+
 // rejectIfFailing は FailWith 中なら失敗を書き込んで真を返す。s.mu を保持して呼ぶ。
 func (s *Server) rejectIfFailing(w http.ResponseWriter) bool {
 	if s.failStatus == 0 {
@@ -460,6 +536,31 @@ func (s *Server) RejectHistory(channelID string, status, code int) {
 	s.historyRejections[channelID] = historyRejection{status: status, code: code}
 }
 
+// AddJSON は、以後 GET {path} に v の JSON を返させる。path は /api/v10 を除いた形で、クエリは見ない。
+func (s *Server) AddJSON(path string, v any) {
+	body, err := json.Marshal(v)
+	if err != nil {
+		panic("discordfake: encode registered JSON: " + err.Error())
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.registered[routeKey(http.MethodGet, path)] = string(body)
+}
+
+// RejectPath は、以後 {method} {path} を status と Discord のエラーコード code で拒ませる。AddJSON と表示名の変更より優先する。
+func (s *Server) RejectPath(method, path string, status, code int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pathRejections[routeKey(method, path)] = historyRejection{status: status, code: code}
+}
+
+// NicknameChanges は、受けた表示名の変更を順に返す。
+func (s *Server) NicknameChanges() []NicknameChange {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]NicknameChange(nil), s.nicknameChanges...)
+}
+
 // FailWith は以後の応答を指定の status の失敗にする。失敗した依頼は記録しない。
 func (s *Server) FailWith(status int) {
 	s.mu.Lock()
@@ -482,6 +583,7 @@ func (s *Server) Reset() {
 	s.channelMessages, s.nextUnreadMessage = nil, 0
 	s.history = map[string][]HistoryMessage{}
 	s.historyRejections = map[string]historyRejection{}
+	s.registered, s.pathRejections, s.nicknameChanges = map[string]string{}, map[string]historyRejection{}, nil
 	if s.responseAdded == nil {
 		s.responseAdded = make(chan struct{})
 	}

@@ -33,6 +33,17 @@ func (r *Registry) HasSecretInput(name string) bool {
 	return secret
 }
 
+// RepliesPrivately は、name のコマンドの返信を実行者だけに見せるかを返す。
+// 入力に秘密を含むコマンドも、入力をほかの参加者に見せないために実行者だけに返す。
+func (r *Registry) RepliesPrivately(name string) bool {
+	switch r.byName[name].(type) {
+	case PrivateReply, SecretInput:
+		return true
+	default:
+		return false
+	}
+}
+
 // Definitions は登録した順にコマンドの定義を返す。
 func (r *Registry) Definitions() []discord.ApplicationCommandCreate {
 	definitions := make([]discord.ApplicationCommandCreate, 0, len(r.commands))

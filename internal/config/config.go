@@ -13,6 +13,7 @@ import (
 	"discord-ai-assistant/internal/imagegen"
 	"discord-ai-assistant/internal/summarize"
 	"discord-ai-assistant/internal/translate"
+	"discord-ai-assistant/internal/voicerecording"
 	"discord-ai-assistant/internal/voicesummary"
 )
 
@@ -26,13 +27,14 @@ var embedded []byte
 
 // Config は bot 全体の設定。
 type Config struct {
-	TextModelID         string              `yaml:"text_model_id" validate:"notblank"`
-	ReplyReserveSeconds int                 `yaml:"reply_reserve_seconds" validate:"min=1"`
-	Ask                 ask.Config          `yaml:"ask"`
-	Translate           translate.Config    `yaml:"translate"`
-	Image               imagegen.Config     `yaml:"image"`
-	Summarize           summarize.Config    `yaml:"summarize"`
-	SummarizeVoice      voicesummary.Config `yaml:"summarize_voice"`
+	TextModelID         string                `yaml:"text_model_id" validate:"notblank"`
+	ReplyReserveSeconds int                   `yaml:"reply_reserve_seconds" validate:"min=1"`
+	Ask                 ask.Config            `yaml:"ask"`
+	Translate           translate.Config      `yaml:"translate"`
+	Image               imagegen.Config       `yaml:"image"`
+	Summarize           summarize.Config      `yaml:"summarize"`
+	SummarizeVoice      voicesummary.Config   `yaml:"summarize_voice"`
+	Recording           voicerecording.Config `yaml:"recording"`
 }
 
 // Load は、同梱した config.yaml を読んで検証する。

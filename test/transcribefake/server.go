@@ -34,6 +34,9 @@ const (
 	conflictErrorType = "ConflictException"
 	conflictMessage   = "The requested job name already exists. Use a different job name."
 
+	internalFailureErrorType = "InternalFailureException"
+	internalFailureMessage   = "Internal failure injected by the fake."
+
 	statusInProgress = "IN_PROGRESS"
 	statusCompleted  = "COMPLETED"
 	statusFailed     = "FAILED"
@@ -60,6 +63,8 @@ type Server struct {
 	mu      sync.Mutex
 	results ObjectWriter
 	jobs    []Job
+	// failedStarts は、StartTranscriptionJob を 500 で失敗させるジョブ名。
+	failedStarts map[string]bool
 }
 
 func New(results ObjectWriter) *Server {
@@ -103,6 +108,14 @@ func (s *Server) serveStart(w http.ResponseWriter, fields cbor.Map) {
 		OutputBucket: stringField(fields, fieldOutputBucket),
 		OutputKey:    stringField(fields, fieldOutputKey),
 		Status:       statusInProgress,
+	}
+	if s.failedStarts[job.Name] {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write(cbor.Encode(cbor.Map{
+			fieldErrorType:    cbor.String(internalFailureErrorType),
+			fieldErrorMessage: cbor.String(internalFailureMessage),
+		}))
+		return
 	}
 	if s.find(job.Name) != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -189,9 +202,20 @@ func (s *Server) Fail(jobName string) {
 	}
 }
 
-// Reset は受けたジョブを消す。
+// FailStart は、以後その名前のジョブの開始を 500 で失敗させる。Reset まで続く。
+func (s *Server) FailStart(jobName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failedStarts == nil {
+		s.failedStarts = map[string]bool{}
+	}
+	s.failedStarts[jobName] = true
+}
+
+// Reset は受けたジョブと FailStart の指定を消す。
 func (s *Server) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.jobs = nil
+	s.failedStarts = nil
 }

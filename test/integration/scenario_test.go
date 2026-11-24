@@ -65,7 +65,7 @@ const (
 	imageSourceNotice     = "元にする画像を受け付けられませんでした。受け付けられるのは、PNG または JPEG で、10 MB 以下、各辺 64 ピクセル以上、総画素数 25,000,000 以下（例: 5712×4284）、縦横比 1:2.5 から 2.5:1 の画像です。"
 )
 
-// resetFakes は各テストの先頭で呼び、Discord・Bedrock・Translate・Lambda・Web 検索・Craig・S3・Transcribe の fake を初期状態に戻す。
+// resetFakes は各テストの先頭で呼び、Discord・Bedrock・Translate・Lambda・Web 検索・Craig・S3・Transcribe・ECS の fake を初期状態に戻す。
 // ssmfake（worker 用と voicereporter 用）は、起動時に読む bot トークンと、その記録を検証に使うので初期化しない。
 func resetFakes() {
 	discord.Reset()
@@ -76,6 +76,7 @@ func resetFakes() {
 	craigF.Reset()
 	s3F.Reset()
 	transcribeF.Reset()
+	ecsF.Reset()
 	forwardToWorker()
 }
 

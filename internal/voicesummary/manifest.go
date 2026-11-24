@@ -11,9 +11,9 @@ import (
 // JobNamePrefix は、この機能の Transcribe のジョブ名の接頭辞。cfn/app.yaml のイベントルールと一致させる。
 const JobNamePrefix = "summarize-voice-"
 
-// 文字起こしの試行番号。初回のジョブが FAILED のとき、1 回だけ開き直す。
+// 文字起こしの試行番号。初回のジョブが FAILED のとき、1 回だけ開き直す。FirstAttempt は voicerecording も初回のジョブに使う。
 const (
-	firstAttempt = 1
+	FirstAttempt = 1
 	retryAttempt = 2
 )
 

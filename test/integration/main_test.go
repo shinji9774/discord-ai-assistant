@@ -24,6 +24,7 @@ import (
 	"discord-ai-assistant/test/bedrockfake"
 	"discord-ai-assistant/test/craigfake"
 	"discord-ai-assistant/test/discordfake"
+	"discord-ai-assistant/test/ecsfake"
 	"discord-ai-assistant/test/lambdafake"
 	"discord-ai-assistant/test/s3fake"
 	"discord-ai-assistant/test/ssmfake"
@@ -47,10 +48,16 @@ const (
 	botTokenValue         = "it-bot-token"
 	workerFunctionName    = "worker"
 	voiceBucketName       = "it-voice-bucket"
+
+	// 録音タスクの起動先。worker の RunTask は ecsfake が受ける。
+	recorderClusterARN        = "arn:aws:ecs:ap-northeast-1:000000000000:cluster/it-recorder"
+	recorderTaskDefinitionARN = "arn:aws:ecs:ap-northeast-1:000000000000:task-definition/it-recorder:1"
+	recorderSubnetIDs         = "subnet-0it000000000000a1,subnet-0it000000000000b2"
+	recorderSecurityGroupID   = "sg-0it0000000000000c3"
 )
 
-// rieInvocationMu は RIE への呼び出し（worker・voicereporter・voicefailure）を 1 件ずつにする。
-// worker の処理が終わってから voicereporter と voicefailure を呼ぶ順序も、これで保つ。
+// rieInvocationMu は RIE への呼び出し（worker・voicereporter・voicefailure・recordingfailure）を 1 件ずつにする。
+// worker の処理が終わってから voicereporter・voicefailure・recordingfailure を呼ぶ順序も、これで保つ。
 var rieInvocationMu sync.Mutex
 
 // 結合テスト全体で共有する、fake と RIE コンテナ。
@@ -64,20 +71,23 @@ var (
 	craigF      *craigfake.Server
 	s3F         *s3fake.Server
 	transcribeF *transcribefake.Server
-	reporterSSM *ssmfake.Server // voicereporter と voicefailure 用。worker の ssm の記録（ちょうど 1 件）を崩さないために分ける
+	reporterSSM *ssmfake.Server // voicereporter・voicefailure・recordingfailure 用。worker の ssm の記録（ちょうど 1 件）を崩さないために分ける
+	ecsF        *ecsfake.Server
 
-	workerContainer        testcontainers.Container
-	ingressContainer       testcontainers.Container
-	voiceReporterContainer testcontainers.Container
-	voiceFailureContainer  testcontainers.Container
-	ingressURL             string
-	workerURL              string
-	voiceReporterURL       string
-	voiceFailureURL        string
-	ingressPublicKey       ed25519.PublicKey
-	ingressPrivate         ed25519.PrivateKey
-	discordURL             string // discordfake のコンテナから見える URL
-	craigURL               string // craigfake のコンテナから見える URL。録音リンクの組み立てにも使う
+	workerContainer           testcontainers.Container
+	ingressContainer          testcontainers.Container
+	voiceReporterContainer    testcontainers.Container
+	voiceFailureContainer     testcontainers.Container
+	recordingFailureContainer testcontainers.Container
+	ingressURL                string
+	workerURL                 string
+	voiceReporterURL          string
+	voiceFailureURL           string
+	recordingFailureURL       string
+	ingressPublicKey          ed25519.PublicKey
+	ingressPrivate            ed25519.PrivateKey
+	discordURL                string // discordfake のコンテナから見える URL
+	craigURL                  string // craigfake のコンテナから見える URL。録音リンクの組み立てにも使う
 )
 
 func TestMain(m *testing.M) {
@@ -149,6 +159,11 @@ func setUp(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	ecsF = ecsfake.New()
+	ecsURL, err := serveFake(ecsF)
+	if err != nil {
+		return err
+	}
 
 	workerContainer, err = startRIE(ctx, "/worker", map[string]string{
 		"BOT_TOKEN_PARAMETER_NAME":           botTokenParameterName,
@@ -161,6 +176,11 @@ func setUp(ctx context.Context) error {
 		"AWS_ENDPOINT_URL_S3":                s3URL,
 		"AWS_ENDPOINT_URL_TRANSCRIBE":        transcribeURL,
 		"CRAIG_BASE_URL":                     craigURL,
+		"RECORDER_CLUSTER_ARN":               recorderClusterARN,
+		"RECORDER_TASK_DEFINITION_ARN":       recorderTaskDefinitionARN,
+		"RECORDER_SUBNET_IDS":                recorderSubnetIDs,
+		"RECORDER_SECURITY_GROUP_ID":         recorderSecurityGroupID,
+		"AWS_ENDPOINT_URL_ECS":               ecsURL,
 	})
 	if err != nil {
 		return err
@@ -212,11 +232,26 @@ func setUp(ctx context.Context) error {
 		return err
 	}
 	voiceFailureURL, err = containerURL(ctx, voiceFailureContainer)
+	if err != nil {
+		return err
+	}
+
+	recordingFailureContainer, err = startRIE(ctx, "/recordingfailure", map[string]string{
+		"BOT_TOKEN_PARAMETER_NAME": botTokenParameterName,
+		"VOICE_BUCKET_NAME":        voiceBucketName,
+		"AWS_ENDPOINT_URL_S3":      s3URL,
+		"AWS_ENDPOINT_URL_SSM":     reporterSSMURL,
+		"DISCORD_API_BASE_URL":     discordURL,
+	})
+	if err != nil {
+		return err
+	}
+	recordingFailureURL, err = containerURL(ctx, recordingFailureContainer)
 	return err
 }
 
 func tearDown(ctx context.Context) {
-	for _, c := range []testcontainers.Container{ingressContainer, workerContainer, voiceReporterContainer, voiceFailureContainer} {
+	for _, c := range []testcontainers.Container{ingressContainer, workerContainer, voiceReporterContainer, voiceFailureContainer, recordingFailureContainer} {
 		if c != nil {
 			_ = testcontainers.TerminateContainer(c, testcontainers.StopContext(ctx))
 		}

@@ -256,7 +256,7 @@ func (c *Command) transcribeTrack(ctx context.Context, requestID string, f craig
 	if err := c.deps.Store.PutAudio(ctx, requestID, f.Track, audio); err != nil {
 		return fmt.Errorf("put audio of track %d: %w", f.Track, err)
 	}
-	if err := c.deps.Jobs.Start(ctx, JobRef{RequestID: requestID, Track: f.Track, Attempt: firstAttempt}); err != nil {
+	if err := c.deps.Jobs.Start(ctx, JobRef{RequestID: requestID, Track: f.Track, Attempt: FirstAttempt}); err != nil {
 		return fmt.Errorf("start transcription of track %d: %w", f.Track, err)
 	}
 	return nil

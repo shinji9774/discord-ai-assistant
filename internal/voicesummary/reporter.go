@@ -148,7 +148,7 @@ func (r *Reporter) transcriptionOutcome(ctx context.Context, m Manifest) (transc
 
 // trackOutcome は、1 トラックの状態を返す。試行 1 が失敗していれば、試行 2 を見る。
 func (r *Reporter) trackOutcome(ctx context.Context, requestID string, track int) (transcriptionOutcome, error) {
-	status, err := r.jobs.Status(ctx, JobRef{RequestID: requestID, Track: track, Attempt: firstAttempt})
+	status, err := r.jobs.Status(ctx, JobRef{RequestID: requestID, Track: track, Attempt: FirstAttempt})
 	if err != nil {
 		return transcriptionPending, r.fail(requestID, stageStatus, fmt.Errorf("status of track %d: %w", track, err))
 	}

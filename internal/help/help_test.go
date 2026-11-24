@@ -25,6 +25,8 @@ const (
 	summarizeMaxMessagesPhraseFormat   = "新しい方から %d 件まで"
 
 	summarizeVoiceMaxMinutesPhraseFormat = "%d 分まで"
+
+	recordingMaxMinutesPhraseFormat = "全員の退出か %d 分で終わり"
 )
 
 // phrasesMissingFrom は、phrases のうち、text に含まれないものを返す。
@@ -39,7 +41,7 @@ func phrasesMissingFrom(text string, phrases []string) []string {
 }
 
 // 条件: 同梱の設定ファイルを読む。
-// 内容: 使い方に書かれた上限（/ask・/translate・/image の文字数、/translate のファイルの大きさ、/image の元の画像の大きさ、/summarize の既定の期間と件数、/summarize-voice の録音の長さ）が、設定の値と一致する（7.5、6.6）。
+// 内容: 使い方に書かれた上限（/ask・/translate・/image の文字数、/translate のファイルの大きさ、/image の元の画像の大きさ、/summarize の既定の期間と件数、/summarize-voice の録音の長さ、/record-start の録音の上限）が、設定の値と一致する（7.5、6.6）。
 func TestUsage_Limits_MatchConfig(t *testing.T) {
 	cfg := configtest.Load(t)
 	limits := []string{
@@ -51,6 +53,7 @@ func TestUsage_Limits_MatchConfig(t *testing.T) {
 		fmt.Sprintf(summarizeDefaultPeriodPhraseFormat, cfg.Summarize.DefaultPeriodHours),
 		fmt.Sprintf(summarizeMaxMessagesPhraseFormat, cfg.Summarize.MaxMessages),
 		fmt.Sprintf(summarizeVoiceMaxMinutesPhraseFormat, cfg.SummarizeVoice.MaxRecordingMinutes),
+		fmt.Sprintf(recordingMaxMinutesPhraseFormat, cfg.Recording.MaxRecordingMinutes),
 	}
 
 	missing := phrasesMissingFrom(help.Usage, limits)

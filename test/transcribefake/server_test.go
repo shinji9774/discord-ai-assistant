@@ -14,12 +14,15 @@ import (
 )
 
 const (
-	startJobPath    = "/service/Transcribe/operation/StartTranscriptionJob"
-	conflictedType  = "ConflictException"
-	sampleJobName   = "summarize-voice-req-1-1-1"
-	errorTypeField  = "__type"
-	jobNameField    = "TranscriptionJobName"
-	cborContentType = "application/cbor"
+	startJobPath   = "/service/Transcribe/operation/StartTranscriptionJob"
+	conflictedType = "ConflictException"
+	// internalFailureType は、FailStart が返すエラーの種類。
+	internalFailureType = "InternalFailureException"
+	sampleJobName       = "summarize-voice-req-1-1-1"
+	otherJobName        = "summarize-voice-req-1-2-1"
+	errorTypeField      = "__type"
+	jobNameField        = "TranscriptionJobName"
+	cborContentType     = "application/cbor"
 )
 
 // startResponse は StartTranscriptionJob への応答のうち、状態コードとエラーの種類。
@@ -57,5 +60,28 @@ func TestServerStart_SameNameTwice_ReturnsConflictException(t *testing.T) {
 	want := []any{startResponse{Status: http.StatusOK}, startResponse{Status: http.StatusBadRequest, ErrorType: conflictedType}, 1}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("responses and job count = %+v; want %+v", got, want)
+	}
+}
+
+// 条件: FailStart したジョブ名と、していないジョブ名を開始する。
+// 内容: 指定した名前は 500 で失敗してジョブにならず、もう一方は 200 で開始される。
+func TestServerStart_FailStart_FailsOnlyTheSpecifiedJob(t *testing.T) {
+	fake := transcribefake.New(s3fake.New())
+	fake.FailStart(sampleJobName)
+
+	failed := postStart(t, fake, sampleJobName)
+	started := postStart(t, fake, otherJobName)
+
+	type outcome struct {
+		Responses []startResponse
+		Jobs      int
+	}
+	got := outcome{Responses: []startResponse{failed, started}, Jobs: len(fake.Jobs())}
+	want := outcome{
+		Responses: []startResponse{{Status: http.StatusInternalServerError, ErrorType: internalFailureType}, {Status: http.StatusOK}},
+		Jobs:      1,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %+v, want %+v", got, want)
 	}
 }

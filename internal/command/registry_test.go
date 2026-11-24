@@ -144,3 +144,37 @@ func TestHasSecretInput_UnknownName_ReturnsFalse(t *testing.T) {
 		t.Error(`HasSecretInput("unknown") = true, want false`)
 	}
 }
+
+// privateStubCommand は、返信を常に非公開にする目印（PrivateReply）を持つ stubCommand。
+type privateStubCommand struct {
+	stubCommand
+}
+
+func (privateStubCommand) RepliesPrivately() {}
+
+// repliesPrivatelyByName は、名前ごとの RepliesPrivately の答えを集める。
+func repliesPrivatelyByName(registry *command.Registry, names []string) map[string]bool {
+	got := make(map[string]bool, len(names))
+	for _, name := range names {
+		got[name] = registry.RepliesPrivately(name)
+	}
+	return got
+}
+
+// 条件: 返信を非公開にするコマンド、秘密入力のコマンド、どちらでもないコマンドを登録し、未登録の名前も問い合わせる
+// 内容: 返信を非公開にするコマンドと秘密入力のコマンドだけが真になる
+func TestRepliesPrivately_EachKindOfCommand_TrueOnlyForPrivateOrSecretInput(t *testing.T) {
+	registry := command.NewRegistry(
+		privateStubCommand{stubCommand{name: "record-start"}},
+		secretStubCommand{stubCommand{name: "summarize-voice"}},
+		stubCommand{name: "ask"},
+	)
+	names := []string{"record-start", "summarize-voice", "ask", "unknown"}
+
+	got := repliesPrivatelyByName(registry, names)
+
+	want := map[string]bool{"record-start": true, "summarize-voice": true, "ask": false, "unknown": false}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("RepliesPrivately = %v, want %v", got, want)
+	}
+}

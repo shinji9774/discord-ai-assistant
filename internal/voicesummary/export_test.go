@@ -5,7 +5,6 @@ var (
 	JobName     = jobName
 	RequestIDOf = requestIDOf
 
-	FirstAttempt = firstAttempt
 	RetryAttempt = retryAttempt
 
 	ErrTrackMissing = errTrackMissing

@@ -51,10 +51,10 @@ func run() error {
 	}
 
 	invoker := ingress.NewLambdaInvoker(awslambda.NewFromConfig(awsConfig), workerFunctionName)
-	// 秘密入力のコマンドかを答えるためだけに Registry を組む。ingress はコマンドを実行しないので、依存は空でよい。
-	secrets := catalog.New(catalog.Dependencies{}, cfg)
+	// 返信を非公開にするコマンドかを答えるためだけに Registry を組む。ingress はコマンドを実行しないので、依存は空でよい。
+	privateReplies := catalog.New(catalog.Dependencies{}, cfg)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	lambda.Start(ingress.NewHandler(publicKey, invoker, secrets, logger).Handle)
+	lambda.Start(ingress.NewHandler(publicKey, invoker, privateReplies, logger).Handle)
 	return nil
 }
 
