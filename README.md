@@ -4,7 +4,7 @@ Discord の slash command から Amazon Translate と AWS Bedrock（Amazon Nova 
 
 この文書は管理者向けの設定手順書。章の順に進めると、bot を使える状態になる。
 
-コマンドの使い方は [internal/help/USAGE.md](internal/help/USAGE.md) を参照してください。
+コマンドの使い方は [詳細ページ](https://shinji9774.github.io/discord-ai-assistant/)（元の文書は [docs/](docs/)）を参照してください。
 
 ## 概要
 
@@ -239,6 +239,8 @@ ECR リポジトリ、リリース用ロールを作る。管理者が最初に 
    | `AWS_RELEASE_ROLE_ARN` | 2-3 の出力 `ReleaseRoleArn` |
    | `DISCORD_PUBLIC_KEY` | 「3. 公開鍵とトークンの設定」で入れる（この時点では作らなくてよい） |
 
+5. 「Settings」→「Pages」を開き、「Build and deployment」の「Source」を「GitHub Actions」にする。利用者向けの詳細ページ（`docs/`）は、リリースのワークフローが GitHub Pages に公開する。
+6. 「Settings」→「Environments」→「github-pages」を開き、「Deployment branches and tags」で「Add deployment branch or tag rule」を選ぶ。「Ref type」を「Tag」、パターンを `v*` にして追加する。追加しないと、タグからの公開が環境の保護ルールで拒否される。
 
 ## 3. 公開鍵とトークンの設定
 
@@ -308,6 +310,8 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
    - スタックが `ROLLBACK_COMPLETE` のとき: リリース用ロールにスタックの削除権限が無いため、失敗する。管理者が `aws cloudformation delete-stack --stack-name <スタック名>` でスタックを削除してから、新しいバージョンのタグでやり直す。
    - 初回の CREATE の change set を実行しないまま次のタグを push したとき: スタックが `REVIEW_IN_PROGRESS` のまま UPDATE の change set を作ろうとして失敗する。先の change set を実行するか、スタックを削除してからやり直す。
 
+タグの push では、テストが通ると利用者向けの詳細ページ（`docs/`）も GitHub Pages に公開する。公開は AWS へのリリースとは独立に行う。公開だけをやり直すときは、GitHub の「Actions」→「Release」→「Run workflow」で対象のタグを選んで実行する（AWS へのリリースは行わない）。
+
 ## 5. 受け口の URL の設定
 
 1. スタックの出力 `FunctionUrl` を取得する。
@@ -326,7 +330,7 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
 
 ## 6. コマンドの登録
 
-`/translate`、`/ask`、`/image`、`/summarize`、`/summarize-voice`、`/help` を Discord に登録する。ローカルでビルドしたイメージの中にある `/register` を使う。
+`/translate`、`/ask`、`/image`、`/summarize`、`/summarize-voice`、`/record-start`、`/record-stop`、`/record-optout`、`/help` を Discord に登録する。ローカルでビルドしたイメージの中にある `/register` を使う。
 
 1. デプロイ済みのリリースタグを checkout する。`vX.Y.Z` は「4. リリース」で push したタグ。登録されるのはビルドしたソースのコマンド定義なので、デプロイ済みと同じタグでビルドしないと、Discord の画面の選択肢と実際の動作がずれる。
 

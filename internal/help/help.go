@@ -9,7 +9,7 @@ import (
 
 const CommandName = "help"
 
-// Usage は /help が返す本文。README からも参照するため、Markdown ファイルとして持つ。
+// Usage は /help が返す本文（コマンドの一覧と詳細ページへのリンク）。Discord に Markdown のまま返すため、Markdown ファイルとして持つ。
 //
 //go:embed USAGE.md
 var Usage string

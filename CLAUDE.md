@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 概要
 
-Go 製の Discord bot。AWS Lambda 上で動き、Lambda 側は Discord と Interactions Endpoint（HTTP）だけでつなぐ。録音タスク（`cmd/recorder`、ECS Fargate）だけが Gateway と Voice に接続する。管理者向けのセットアップ手順は `README.md`、コマンドの利用者向け説明は `internal/help/USAGE.md` にある。
+Go 製の Discord bot。AWS Lambda 上で動き、Lambda 側は Discord と Interactions Endpoint（HTTP）だけでつなぐ。録音タスク（`cmd/recorder`、ECS Fargate）だけが Gateway と Voice に接続する。管理者向けのセットアップ手順は `README.md`、コマンドの利用者向け説明は、`/help` が返す概要が `internal/help/USAGE.md`、詳細が `docs/`（GitHub Pages で公開）にある。上限値などの詳細は `docs/` だけに書く。
 
 ## コマンド
 
@@ -28,7 +28,7 @@ go test -run '^TestExecute_RecordingAccepted_StoresTargetAudioAndStartsJobs$' ./
 go test -tags integration -count=1 -run '<テスト名>' ./test/integration/...
 ```
 
-CI（`.github/workflows/ci.yml`）は `make docker-test` と `make image-it docker-test-it` を実行する。`v*.*.*` タグの push で `release.yml` が ECR へ push し、CloudFormation の change set を作る（実行は管理者が手動で行う）。
+CI（`.github/workflows/ci.yml`）は `make docker-test` と `make image-it docker-test-it` を実行する。`v*.*.*` タグの push で `release.yml` が ECR へ push し、CloudFormation の change set を作る（実行は管理者が手動で行う）。テストが通ると `docs/` を GitHub Pages に公開する（`release` ジョブとは独立）。`release.yml` をタグを選んで手動実行すると、公開だけを行う。
 
 ## アーキテクチャ
 
