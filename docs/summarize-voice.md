@@ -1,3 +1,8 @@
+---
+title: "/summarize-voice"
+nav_order: 6
+---
+
 # /summarize-voice — 録音を文字起こしして要約する
 
 Craig の録音を話者名つきで文字起こしし、要約します。

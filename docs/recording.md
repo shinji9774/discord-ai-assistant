@@ -1,3 +1,8 @@
+---
+title: "録音（/record-*）"
+nav_order: 7
+---
+
 # /record-start・/record-stop・/record-optout — bot が録音して要約する
 
 bot がボイスチャンネルを録音し、終わったら文字起こしして要約します。

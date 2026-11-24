@@ -1,3 +1,8 @@
+---
+title: "/summarize"
+nav_order: 5
+---
+
 # /summarize — 会話を要約する
 
 このチャンネルの会話を要約します。
