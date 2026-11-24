@@ -55,6 +55,9 @@ image-register: ## Build docker image for register
 image-it: ## Build docker image for integration test
 	docker build --target it -t $(IT_IMAGE) .
 
+image-tools: ## Build docker image for tools
+	docker build --target tools -t $(IMAGE)-tools .
+
 image-runtime: ## Build docker image for runtime
 	docker build --target runtime -t $(IMAGE) .
 
@@ -85,6 +88,18 @@ docker-test-it: docker-cache-volume ## Run integration test in docker container
 # AWS profile は aws CLI が読む AWS_PROFILE に任せる（make register AWS_PROFILE=xxx でも AWS_PROFILE=xxx make register でも効く）
 # aws が失敗したら docker run へ進まないよう、代入と export を分ける
 register: ## Register bot commands to Discord
-	DISCORD_BOT_TOKEN=$$(aws ssm get-parameter --region $(AWS_REGION) --name $(BOT_TOKEN_PARAMETER_NAME) --with-decryption --query Parameter.Value --output text) && \
+	@DISCORD_BOT_TOKEN=$$(aws ssm get-parameter --region $(AWS_REGION) --name $(BOT_TOKEN_PARAMETER_NAME) --with-decryption --query Parameter.Value --output text) && \
 	export DISCORD_BOT_TOKEN && \
 	docker run --rm -e DISCORD_BOT_TOKEN $(REGISTER_IMAGE)
+
+voiceprobe: ## Run voiceprobe tool in docker container
+	@DISCORD_BOT_TOKEN=$$(aws ssm get-parameter --region $(AWS_REGION) --name $(BOT_TOKEN_PARAMETER_NAME) --with-decryption --query Parameter.Value --output text) && \
+	export DISCORD_BOT_TOKEN && \
+	GUILD_ID=$$(read -p "Enter server ID: " input && echo $$input) && \
+	export GUILD_ID && \
+	CHANNEL_ID=$$(read -p "Enter channel ID: " input && echo $$input) && \
+	export CHANNEL_ID && \
+	OUT_DIR=$$(mktemp -d) && \
+	export OUT_DIR && \
+	echo "Output directory: $$OUT_DIR" && \
+	docker run --rm --cpus=0.25 -v $$OUT_DIR:/out -e DISCORD_BOT_TOKEN -e GUILD_ID -e CHANNEL_ID -e OUT_DIR=/out -e PROBE_DURATION=2m $(IMAGE)-tools /voiceprobe
