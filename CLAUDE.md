@@ -8,7 +8,7 @@ Go 製の Discord bot。AWS Lambda 上で動き、Lambda 側は Discord と Inte
 
 ## コマンド
 
-Go のバージョンは `go.mod` で指定する。`make`（引数なし）でターゲット一覧を表示する。
+Go のバージョンの正は `Dockerfile` の `build-base` ステージの golang タグ（`golang:X.Y.Z`）。`go.mod` の `go` 行は必要な最小バージョンで、Go の更新に合わせて上げない。`make`（引数なし）でターゲット一覧を表示する。
 
 | 目的 | コマンド |
 |---|---|
@@ -28,7 +28,7 @@ go test -run '^TestExecute_RecordingAccepted_StoresTargetAudioAndStartsJobs$' ./
 go test -tags integration -count=1 -run '<テスト名>' ./test/integration/...
 ```
 
-CI（`.github/workflows/ci.yml`）は `make docker-test` と `make image-it docker-test-it` を実行する。`v*.*.*` タグの push で `release.yml` が ECR へ push し、CloudFormation の change set を作る（実行は管理者が手動で行う）。テストが通ると `docs/` を GitHub Pages に公開する（`release` ジョブとは独立）。`release.yml` をタグを選んで手動実行すると、公開だけを行う。
+CI（`.github/workflows/ci.yml`）は `test` ジョブで `make docker-test`、`make image-it docker-test-it`、`make image-runtime image-register` を、`lint` ジョブで `make check-devcontainer-go`、`make docker-lint`、`make test-review-comment` を実行する。Dependabot の PR には `.github/workflows/dependabot-review.yml` が Claude のレビューコメントを付ける。`v*.*.*` タグの push で `release.yml` が ECR へ push し、CloudFormation の change set を作る（実行は管理者が手動で行う）。テストが通ると `docs/` を GitHub Pages に公開する（`release` ジョブとは独立）。`release.yml` をタグを選んで手動実行すると、公開だけを行う。
 
 ## アーキテクチャ
 

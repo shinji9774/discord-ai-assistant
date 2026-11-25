@@ -1,0 +1,20 @@
+{
+  "verdict": "マージしてよい",
+  "priority": "低",
+  "priority_reason": "本番のバイナリに効く patch 更新で、セキュリティ修正は見つからなかった",
+  "impacts": ["本番のバイナリ"],
+  "checks": [],
+  "dependencies": [
+    {
+      "name": "example.com/delta",
+      "from": "v0.9.0",
+      "to": "v0.9.1",
+      "changelog_found": false,
+      "changelog_url": "",
+      "breaking_changes": "なし",
+      "security_fixes": "なし",
+      "usages": "- cmd/worker/main.go:30 `delta.New`",
+      "license_change": "変更なし"
+    }
+  ]
+}

@@ -18,5 +18,19 @@ jobs:
         uses: actions/checkout@v7
       - name: Run unit tests
         run: make docker-test
+      - name: Build images
+        run: make image
       - name: Run integration tests
-        run: make image-it docker-test-it
+        run: make docker-test-it
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v7
+      - name: Check devcontainer Go version
+        run: make check-devcontainer-go
+      - name: Lint workflows
+        run: make docker-lint
+      - name: Test review comment rendering
+        run: make test-review-comment

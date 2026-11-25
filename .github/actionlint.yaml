@@ -1,0 +1,6 @@
+# actionlint v1.7.12 が内蔵する claude-code-action の入力一覧に Workload Identity Federation の入力が無いため、
+# 該当の「is not defined」エラーだけを無視する。actionlint のデータが更新されたら消す。
+paths:
+  .github/workflows/dependabot-review.yml:
+    ignore:
+      - 'input "anthropic_(federation_rule_id|organization_id|service_account_id)" is not defined in action "anthropics/claude-code-action@v1"'

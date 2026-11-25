@@ -1,0 +1,20 @@
+{
+  "verdict": "確認が必要",
+  "priority": "中",
+  "priority_reason": "本番のバイナリに効く major 更新を含む",
+  "impacts": ["本番のバイナリ"],
+  "checks": [],
+  "dependencies": [
+    {
+      "name": "example.com/alpha",
+      "from": "v1.4.0",
+      "to": "v2.0.0",
+      "changelog_found": true,
+      "changelog_url": "https://example.com/alpha/releases/tag/v2.0.0",
+      "breaking_changes": "- Client.Do が *APIError ではなく error を返す",
+      "security_fixes": "なし",
+      "usages": "- internal/discordapi/client.go:42 `alpha.Client.Do`",
+      "license_change": "変更なし"
+    }
+  ]
+}

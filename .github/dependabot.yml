@@ -1,0 +1,43 @@
+# 依存の更新。バージョン更新は月次、セキュリティ更新は随時（アラートごとに個別の PR）。
+# gomod のグループは記述順で先に一致したものに入るので、「その他」（go-modules）を最後に置く。
+# major の更新はどのグループにも一致せず、依存ごとに個別の PR になる。
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      aws-sdk-go-v2:
+        applies-to: version-updates
+        patterns:
+          - github.com/aws/aws-sdk-go-v2*
+          - github.com/aws/smithy-go
+        update-types: [minor, patch]
+      dave:
+        applies-to: version-updates
+        patterns:
+          - github.com/thomas-vilte/dave-go
+          - github.com/thomas-vilte/mls-go
+          - github.com/disgoorg/godave
+        update-types: [minor, patch]
+      go-modules:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      github-actions:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # Dockerfile のイメージ（golang、alpine など）はイメージごとに個別の PR にする
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly

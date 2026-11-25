@@ -1,0 +1,20 @@
+{
+  "verdict": "マージしてよい",
+  "priority": "低",
+  "priority_reason": "テストだけで使う依存の patch 更新",
+  "impacts": ["テストのみ"],
+  "checks": [],
+  "dependencies": [
+    {
+      "name": "example.com/gamma",
+      "from": "v1.2.3",
+      "to": "v1.2.4",
+      "changelog_found": true,
+      "changelog_url": "https://example.com/gamma/releases/tag/v1.2.4",
+      "breaking_changes": "なし",
+      "security_fixes": "なし",
+      "usages": "- internal/voicesummary/summary_test.go:18 `gamma.Equal`",
+      "license_change": "変更なし"
+    }
+  ]
+}

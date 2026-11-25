@@ -1,0 +1,104 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "verdict",
+    "priority",
+    "priority_reason",
+    "impacts",
+    "checks",
+    "dependencies"
+  ],
+  "properties": {
+    "verdict": {
+      "description": "判定。CI の結果は含めない",
+      "type": "string",
+      "enum": ["マージしてよい", "確認が必要", "見送りを推奨"]
+    },
+    "priority": {
+      "description": "優先度",
+      "type": "string",
+      "enum": ["高", "中", "低"]
+    },
+    "priority_reason": {
+      "description": "優先度の理由を 1 文で",
+      "type": "string"
+    },
+    "impacts": {
+      "description": "更新が効く範囲（複数可）",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": ["本番のバイナリ", "テストのみ", "CI・リリースのワークフロー"]
+      }
+    },
+    "checks": {
+      "description": "人が確認すべき点。判定がマージしてよいなら空の配列",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["point", "reason", "location"],
+        "properties": {
+          "point": { "description": "確認すべき点", "type": "string" },
+          "reason": { "description": "理由", "type": "string" },
+          "location": {
+            "description": "path:line、または changelog の URL と見出し",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "dependencies": {
+      "description": "更新された依存ごとの詳細",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "from",
+          "to",
+          "changelog_found",
+          "changelog_url",
+          "breaking_changes",
+          "security_fixes",
+          "usages",
+          "license_change"
+        ],
+        "properties": {
+          "name": { "description": "依存の名前", "type": "string" },
+          "from": { "description": "更新前の版", "type": "string" },
+          "to": { "description": "更新後の版", "type": "string" },
+          "changelog_found": {
+            "description": "changelog かリリースノートを読めたか",
+            "type": "boolean"
+          },
+          "changelog_url": {
+            "description": "読めた changelog の URL。読めなければ空文字",
+            "type": "string"
+          },
+          "breaking_changes": {
+            "description": "破壊的変更の Markdown の箇条書き。なければ「なし」",
+            "type": "string"
+          },
+          "security_fixes": {
+            "description": "CVE や GHSA の番号つきのセキュリティ修正の箇条書き。なければ「なし」",
+            "type": "string"
+          },
+          "usages": {
+            "description": "変更された API のリポジトリ内の使用箇所の箇条書き（- path:line 識別子）。なければ「なし」",
+            "type": "string"
+          },
+          "license_change": {
+            "description": "ライセンスの変更。変わっていなければ「変更なし」",
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

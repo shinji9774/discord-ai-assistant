@@ -1,0 +1,37 @@
+{
+  "verdict": "確認が必要",
+  "priority": "中",
+  "priority_reason": "本番のバイナリに効く major 更新を含む",
+  "impacts": ["本番のバイナリ", "テストのみ"],
+  "checks": [
+    {
+      "point": "Client.Do の戻り値が変わった",
+      "reason": "エラーの型が変わり、errors.As の判定が外れるおそれがある",
+      "location": "internal/discordapi/client.go:42"
+    }
+  ],
+  "dependencies": [
+    {
+      "name": "example.com/alpha",
+      "from": "v1.4.0",
+      "to": "v2.0.0",
+      "changelog_found": true,
+      "changelog_url": "https://example.com/alpha/releases/tag/v2.0.0",
+      "breaking_changes": "- Client.Do が *APIError ではなく error を返す",
+      "security_fixes": "なし",
+      "usages": "- internal/discordapi/client.go:42 `alpha.Client.Do`",
+      "license_change": "変更なし"
+    },
+    {
+      "name": "example.com/beta",
+      "from": "v0.3.1",
+      "to": "v0.3.2",
+      "changelog_found": true,
+      "changelog_url": "https://example.com/beta/releases/tag/v0.3.2",
+      "breaking_changes": "なし",
+      "security_fixes": "- GHSA-2c3m-7q9v-5f8h: 長い入力でパニックする",
+      "usages": "なし",
+      "license_change": "MIT から Apache-2.0 に変更"
+    }
+  ]
+}

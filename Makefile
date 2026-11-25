@@ -6,9 +6,19 @@ IT_IMAGE ?= discord-ai-assistant:it
 AWS_REGION ?= ap-northeast-1
 BOT_TOKEN_PARAMETER_NAME ?= /discord-ai-assistant/bot-token
 
-# go.mod の go 行から golang イメージのバージョンを決める
-GO_VERSION := $(shell awk '$$1 == "go" { print $$2 }' go.mod)
-GO_IMAGE ?= golang:$(GO_VERSION)
+# Go のバージョンの正は Dockerfile の build-base の golang タグ。golang イメージはそこから決める
+DOCKERFILE ?= Dockerfile
+DOCKERFILE_GO_IMAGE := $(shell awk '$$1 == "FROM" && $$NF == "build-base" { print $$2; exit }' $(DOCKERFILE))
+GO_IMAGE ?= $(DOCKERFILE_GO_IMAGE)
+
+# devcontainer の Go イメージ（mcr.microsoft.com/devcontainers/go:<variant>-X.Y-<os>）の minor が、Dockerfile の Go と一致するかを検査する
+DEVCONTAINER_JSON ?= .devcontainer/devcontainer.json
+DOCKERFILE_GO_MINOR = $(shell echo '$(DOCKERFILE_GO_IMAGE)' | sed -nE 's/^golang:([0-9]+\.[0-9]+)\.[0-9]+$$/\1/p')
+DEVCONTAINER_IMAGE = $(shell sed -nE 's/^[[:space:]]*"image":[[:space:]]*"([^"]+)".*/\1/p' $(DEVCONTAINER_JSON))
+DEVCONTAINER_GO_MINOR = $(shell echo '$(DEVCONTAINER_IMAGE)' | sed -nE 's|^mcr\.microsoft\.com/devcontainers/go:[0-9]+-([0-9]+\.[0-9]+)-[a-z]+$$|\1|p')
+
+# actionlint の版。上げるときはこの行を書き換える
+ACTIONLINT_VERSION ?= v1.7.12
 
 # golang コンテナ内の作業ディレクトリとキャッシュ。キャッシュは名前付きボリュームで持ち回る
 CONTAINER_WORKDIR := /src
@@ -34,7 +44,7 @@ DOCKER_GO_RUN = docker run --rm \
 	-e TESTCONTAINERS_HOST_OVERRIDE=$(TESTCONTAINERS_HOST) \
 	$(GO_IMAGE)
 
-.PHONY: help vet test image image-it test-it it docker-test docker-test-it docker-cache-volume register
+.PHONY: help vet test image image-it test-it it docker-test docker-test-it docker-lint docker-cache-volume register check-devcontainer-go test-review-comment
 
 .DEFAULT_GOAL := help
 help:
@@ -44,7 +54,7 @@ vet: ## Run go vet
 	go vet ./...
 
 lint: ## Run actionlint
-	go run github.com/rhysd/actionlint/cmd/actionlint@latest .github/workflows/*.yml
+	go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION) .github/workflows/*.yml
 
 test: ## Run go test
 	go test -v ./...
@@ -80,9 +90,31 @@ docker-remove-cache-volume: ## Remove docker volume for go cache
 docker-test: docker-cache-volume ## Run go vet and go test in docker container
 	$(DOCKER_GO_RUN) make vet test
 
+docker-lint: docker-cache-volume ## Run actionlint in docker container
+	$(DOCKER_GO_RUN) make lint
+
 # イメージは事前に make image-it でホスト側に作っておく
 docker-test-it: docker-cache-volume ## Run integration test in docker container
 	$(DOCKER_GO_RUN) make test-it
+
+check-devcontainer-go: ## Check devcontainer Go minor version matches Dockerfile build-base
+	@if [ -z "$(DOCKERFILE_GO_MINOR)" ]; then \
+		echo "Cannot read Go version from $(DOCKERFILE): expected 'FROM golang:X.Y.Z AS build-base', got '$(DOCKERFILE_GO_IMAGE)'."; \
+		exit 1; \
+	fi
+	@if [ -z "$(DEVCONTAINER_GO_MINOR)" ]; then \
+		echo "Cannot read Go version from $(DEVCONTAINER_JSON): expected image 'mcr.microsoft.com/devcontainers/go:<variant>-X.Y-<os>', got '$(DEVCONTAINER_IMAGE)'."; \
+		exit 1; \
+	fi
+	@if [ "$(DEVCONTAINER_GO_MINOR)" != "$(DOCKERFILE_GO_MINOR)" ]; then \
+		echo "devcontainer Go version ($(DEVCONTAINER_GO_MINOR)) does not match Dockerfile Go version ($(DOCKERFILE_GO_MINOR) from $(DOCKERFILE_GO_IMAGE))."; \
+		echo "Update the image tag in $(DEVCONTAINER_JSON) to mcr.microsoft.com/devcontainers/go:<variant>-$(DOCKERFILE_GO_MINOR)-<os>."; \
+		exit 1; \
+	fi
+	@echo "devcontainer Go version ($(DEVCONTAINER_GO_MINOR)) matches Dockerfile Go version ($(DOCKERFILE_GO_IMAGE))."
+
+test-review-comment: ## Run golden tests for Dependabot review comment rendering
+	./.github/dependabot-review/test-render-comment.sh
 
 # 秘密情報は -e 名前 で渡し、値をコマンドラインに展開しない
 # AWS profile は aws CLI が読む AWS_PROFILE に任せる（make register AWS_PROFILE=xxx でも AWS_PROFILE=xxx make register でも効く）

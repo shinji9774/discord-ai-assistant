@@ -429,7 +429,7 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
 
 自動テストをローカルで実行する。
 
-1. Go を入れる。バージョンは `go.mod` で指定している（Go 1.27.4）。
+1. Go を入れる。バージョンは `Dockerfile` の `build-base` ステージの golang タグ（`golang:1.27.4`）に合わせる。`go.mod` の `go` 行は必要な最小バージョン。
 
 2. 静的解析と単体テストを実行する。
 
@@ -449,9 +449,60 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
    make test-it
    ```
 
-5. Go を入れずに golang コンテナで実行する場合（Docker が必要）。`make docker-test-it` は Linux の Docker Engine で動かすこと。Makefile がソケットの gid を GNU の `stat -c %g` で取っており（macOS の `stat` では動かない）、コンテナを `--network host` で動かしているため（Docker Desktop ではホストのネットワークにならず、兄弟コンテナの公開ポートに localhost で届かない）。macOS の Docker Desktop などは対象外。イメージは `go.mod` の `go` 行から決まる。モジュールとビルドのキャッシュは名前付きボリュームに残る。
+5. Go を入れずに golang コンテナで実行する場合（Docker が必要）。`make docker-test-it` は Linux の Docker Engine で動かすこと。Makefile がソケットの gid を GNU の `stat -c %g` で取っており（macOS の `stat` では動かない）、コンテナを `--network host` で動かしているため（Docker Desktop ではホストのネットワークにならず、兄弟コンテナの公開ポートに localhost で届かない）。macOS の Docker Desktop などは対象外。イメージは `Dockerfile` の `build-base` ステージの golang タグから決まる。モジュールとビルドのキャッシュは名前付きボリュームに残る。
 
    ```sh
    make docker-test
    make image-it docker-test-it
    ```
+
+## 依存の更新（Dependabot）
+
+依存の更新は Dependabot が PR を作る。マージは人が行う（自動マージはしない）。
+
+### 更新の周期と PR のまとめ方
+
+設定は `.github/dependabot.yml`。
+
+- バージョン更新は月 1 回。
+  - Go モジュール: minor と patch を、aws-sdk-go-v2 系、dave 系（dave-go、mls-go、godave）、その他の 3 つの PR にまとめる。major は依存ごとに個別の PR。
+  - GitHub Actions: minor と patch を 1 つの PR にまとめる。major は action ごとに個別の PR。
+  - Docker のベースイメージ（`Dockerfile` の golang、alpine など）: イメージごとに個別の PR。
+- セキュリティ更新は、Dependabot のアラートが出たときに随時、依存ごとに個別の PR を作る。月次の周期を待たない。
+- pseudo-version で参照している dave-go は、新しいタグが出るまで PR が作られない。コミット単位の追従は人が行う。
+
+### Go のバージョン
+
+- Go のバージョンの正は `Dockerfile` の 1 行目（`FROM golang:X.Y.Z AS build-base`）のタグ。Makefile の単体テスト用イメージもこのタグから決まるので、ビルドとテストは同じ Go で動く。タグにサフィックス（`-alpine3.24` など）を付けない（Dependabot がサフィックスを更新しないため）。
+- Go の patch 版の更新 PR（例: `1.27.4` → `1.27.5`）は、CI が通ればそのままマージできる。
+- Go の minor 版の更新 PR（例: `1.27.x` → `1.28.0`）では、CI の `lint` ジョブの `make check-devcontainer-go` が失敗する。`.devcontainer/devcontainer.json` の `image` を `mcr.microsoft.com/devcontainers/go:2-1.28-trixie` のように直し、PR のブランチに push する。CI がすべてやり直される（この push では Claude のレビューは動かない）。
+- Go を手で上げるときは、`Dockerfile` の 1 行目のタグを書き換える。minor が変わるなら `devcontainer.json` も直す。
+- `go.mod` の `go` 行は、必要な最小バージョン。Go の更新に合わせて上げない。上げるときは `go` 行を書き換え、`make docker-test` で確かめる。`Dockerfile` のタグの Go より新しくはできない（golang イメージは `GOTOOLCHAIN=local` なので、ビルドとテストが失敗する）。
+- 依存の更新が新しい Go を要求して CI が失敗したときは、Go の更新 PR を先にマージしてから（または `Dockerfile` のタグを手で上げてから）、依存の PR に `@dependabot rebase` とコメントして CI をやり直す。
+
+### Claude のレビューコメント
+
+Dependabot が PR を作ったとき、または更新したとき（rebase や新しい版への差し替え）に、`.github/workflows/dependabot-review.yml` が日本語のレビューコメントを 1 件付ける。PR が更新されたら、同じコメントを書き換える。
+
+- 冒頭の「まとめ」: 判定（マージしてよい／確認が必要／見送りを推奨）、優先度（高／中／低）、影響範囲（本番のバイナリ／テストのみ／CI・リリースのワークフロー）、人が確認すべき点。
+- 依存ごとの詳細: changelog・リリースノートから読み取った破壊的変更、セキュリティ修正、変更された API のリポジトリ内の使用箇所（ファイルと行）、ライセンスの変更。
+- changelog を取得できなかった依存があると、判定は「マージしてよい」にならない。
+- 判定は CI の結果を含まない。マージの前提は、CI（`test` と `lint`）がすべて成功していること。
+- Claude はテストやビルドを実行せず、承認、マージ、コミットもしない。レビューが失敗しても、CI の結果には影響しない（Actions の実行結果に失敗として出る）。
+- モデルは別名 `sonnet`（Anthropic API の最新の Sonnet）。固定したいときは、ワークフローの `--model sonnet` を `--model claude-sonnet-5-5` のような ID に書き換える。
+- 1 回の実行は 20 分、40 ターンまで。
+
+### 設定
+
+1. Dependabot を有効にする: リポジトリの Settings → Advanced Security で、Dependabot alerts と Dependabot security updates を有効にする。バージョン更新は `.github/dependabot.yml` があれば動く。
+2. Claude の認証（Workload Identity Federation）を設定する: Anthropic 組織の admin が、Claude Console の Workload identity → Connect workload → GitHub Actions で、Issuer・サービスアカウント・Federation rule を作る。rule の条件は次のとおりにし、Dependabot が起動した実行だけがトークンを取れるようにする。作った rule の ID（`fdrl_...`）、サービスアカウントの ID（`svac_...`）、組織の ID を、`dependabot-review.yml` の `anthropic_federation_rule_id`、`anthropic_service_account_id`、`anthropic_organization_id` に書く。どれも秘密情報ではない。API キーやシークレットの登録は要らない。
+   - Issuer URL: `https://token.actions.githubusercontent.com`
+   - `subject_prefix`: `repo:<owner>/<repo>:pull_request`
+   - `audience`: `https://api.anthropic.com`
+   - `claims`: `actor` が `dependabot[bot]`、`repository_owner` が `<owner>`
+   - 対象のワークスペースは 1 つにする（複数にすると、ワークフローで `anthropic_workspace_id` の指定が必要になる）
+3. CI をマージ前の必須チェックにする: Settings → Rules → Rulesets → New ruleset → New branch ruleset で、対象に既定のブランチを選び、Require status checks to pass に `test` と `lint` を追加する。Claude のレビュー（`claude-review`、`post-review-comment`）は追加しない。private リポジトリでは、プランによって ruleset を使えない場合がある。
+
+### actionlint の版
+
+`make lint` の actionlint は、Makefile の `ACTIONLINT_VERSION` で版を固定している。上げるときはこの変数を書き換える。`make docker-lint` は Go を入れずに golang コンテナで実行する。

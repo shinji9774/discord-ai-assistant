@@ -1,0 +1,143 @@
+name: Dependabot review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions: {}
+
+concurrency:
+  group: dependabot-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # Claude は読み取り専用のツールだけで調べ、構造化出力を返す。書き込み権限は持たせない
+  claude-review:
+    # 作者も push した人も Dependabot のときだけ動く（人が devcontainer.json を直した push では動かない）
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write # Anthropic の Workload Identity Federation 用に OIDC トークンを取る
+    outputs:
+      review: ${{ steps.claude.outputs.structured_output }}
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v3
+
+      - name: Save review context
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          UPDATED_DEPENDENCIES: ${{ steps.metadata.outputs.updated-dependencies-json }}
+          CONTEXT_DIR: ${{ runner.temp }}/review-context
+        run: |
+          mkdir -p "$CONTEXT_DIR"
+          gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" > "$CONTEXT_DIR/pr.diff"
+          printf '%s\n' "$UPDATED_DEPENDENCIES" > "$CONTEXT_DIR/updated-dependencies.json"
+
+      - name: Load review result schema
+        id: schema
+        run: echo "schema=$(jq -c . .github/dependabot-review/review-result.schema.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Review with Claude
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          # Anthropic の Workload Identity Federation で認証する。ID は秘密情報ではない（README の「設定」を参照）
+          anthropic_federation_rule_id: fdrl_01A1Zjk2fBLkFkmTHA36EiT9
+          anthropic_organization_id: 61d2fad9-83d2-4dfa-a779-f45ff51173e0
+          anthropic_service_account_id: svac_01EbMbdLv44Zam8taZEw3nqH
+          # OAuth トークン方式に切り替えるときは、上の行を消し、次の行のコメントを外す
+          # claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          allowed_bots: dependabot[bot]
+          prompt: |
+            あなたは Dependabot が作った依存の更新 PR をレビューする。結果は指定された JSON スキーマの構造化出力だけで返す。
+            PR へのコメント、コミット、承認はしない。テストやビルドは実行しない（CI が行う）。
+
+            入力:
+            - リポジトリ: ${{ github.repository }}（作業ディレクトリに PR のブランチを checkout 済み）
+            - PR 番号: ${{ github.event.pull_request.number }}
+            - PR の差分: ${{ runner.temp }}/review-context/pr.diff
+            - 更新された依存の一覧（dependabot/fetch-metadata の updated-dependencies-json）: ${{ runner.temp }}/review-context/updated-dependencies.json
+
+            更新された依存ごとに次を調べ、dependencies に 1 件ずつ入れる。
+            1. changelog とリリースノート: WebFetch と WebSearch で、from から to までのすべての版を読む。読めた URL を changelog_url に入れ、changelog_found を true にする。どれも読めなければ changelog_found を false、changelog_url を空文字にし、破壊的変更がないとは書かない。
+            2. breaking_changes: 破壊的変更を「- 」で始まる箇条書きで書く。なければ「なし」。
+            3. security_fixes: セキュリティ修正を CVE か GHSA の番号つきで書く。GitHub Advisory Database（https://github.com/advisories）も調べる。なければ「なし」。
+            4. usages: 変更された API がリポジトリ内で使われている箇所を Grep で探し、「- path:line `識別子`」の箇条書きで書く。使われていなければ「なし」。
+            5. license_change: ライセンスが変わったか。変わっていれば変更前と変更後を書く。変わっていなければ「変更なし」。
+
+            impacts（複数可）:
+            - gomod: 更新された依存を使っているのが cmd/ か internal/ の _test.go 以外のファイルなら「本番のバイナリ」。_test.go だけなら「テストのみ」。
+            - docker: golang イメージは「本番のバイナリ」と「テストのみ」の両方。alpine など実行用のイメージは「本番のバイナリ」。
+            - github-actions: 「CI・リリースのワークフロー」。
+
+            priority:
+            - 高: セキュリティ修正を含み、本番のバイナリに効く更新。
+            - 中: 本番のバイナリに効く major 更新、重要なバグ修正を含む更新、または本番以外に効くセキュリティ修正を含む更新。
+            - 低: それ以外の更新。
+            priority_reason に理由を 1 文で書く。
+
+            verdict（CI の結果は判定に含めない）:
+            - マージしてよい: 破壊的変更がリポジトリ内の使用箇所に影響せず、人が確認すべき点がない。changelog を読めなかった依存が 1 つでもあれば選ばない。
+            - 確認が必要: 人が確かめるべき点がある。
+            - 見送りを推奨: 破壊的変更がリポジトリ内の使用箇所を壊す、または更新先の版に既知の重大な問題がある。
+
+            checks: verdict が「確認が必要」か「見送りを推奨」なら、人が確認すべき点を 1 件以上入れる。location には path:line か、changelog の URL と見出しを書く。「マージしてよい」なら空の配列にする。
+
+            文章はすべて日本語で書く。
+          claude_args: >-
+            --model sonnet
+            --max-turns 40
+            --add-dir ${{ runner.temp }}/review-context
+            --allowedTools "Read,Grep,Glob,WebFetch,WebSearch"
+            --json-schema '${{ steps.schema.outputs.schema }}'
+
+      - name: Require structured review result
+        if: steps.claude.outputs.structured_output == ''
+        run: |
+          echo "Claude did not return a structured review result."
+          exit 1
+
+  # 構造化出力を Markdown に描画し、目印つきのコメントを 1 件に保つ（あれば更新、なければ作成）
+  post-review-comment:
+    needs: claude-review
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Render review comment
+        env:
+          REVIEW_JSON: ${{ needs.claude-review.outputs.review }}
+        run: printf '%s' "$REVIEW_JSON" | jq -r -f .github/dependabot-review/render-comment.jq > "$RUNNER_TEMP/comment.md"
+
+      - name: Upsert review comment
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- dependabot-review -->"))) | .id' | head -n 1)
+          if [ -n "$comment_id" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" -F body=@"$RUNNER_TEMP/comment.md" > /dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -F body=@"$RUNNER_TEMP/comment.md" > /dev/null
+          fi
