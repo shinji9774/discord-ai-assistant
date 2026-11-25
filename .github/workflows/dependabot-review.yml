@@ -100,7 +100,8 @@ jobs:
             --model sonnet
             --max-turns 40
             --add-dir ${{ runner.temp }}/review-context
-            --allowedTools "Read,Grep,Glob,WebFetch,WebSearch"
+            --permission-mode auto
+            --tools "Read,Grep,Glob,WebFetch,WebSearch"
             --json-schema '${{ steps.schema.outputs.schema }}'
 
       - name: Require structured review result
