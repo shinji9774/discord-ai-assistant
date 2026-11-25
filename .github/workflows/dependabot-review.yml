@@ -104,6 +104,25 @@ jobs:
             --tools "Read,Grep,Glob,WebFetch,WebSearch"
             --json-schema '${{ steps.schema.outputs.schema }}'
 
+      - name: Diagnose failed Claude run
+        if: ${{ always() && steps.claude.outcome == 'failure' }}
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          if [ ! -s "$EXECUTION_FILE" ]; then
+            echo "::warning::Claude Code failed without an execution file."
+            exit 0
+          fi
+
+          api_status=$(jq -r '[.. | objects | .api_error_status? | select(type == "number")] | last // empty' "$EXECUTION_FILE")
+          if [ -z "$api_status" ]; then
+            echo "::warning::Claude Code failed, but the execution file contains no API error status."
+          elif [ "$api_status" = "429" ]; then
+            echo "::warning::Anthropic API returned HTTP 429. Check the service-account usage limits and retry after they reset."
+          else
+            echo "::warning::Anthropic API returned HTTP $api_status."
+          fi
+
       - name: Require structured review result
         if: steps.claude.outputs.structured_output == ''
         run: |
