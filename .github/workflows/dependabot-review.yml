@@ -188,7 +188,7 @@ jobs:
           echo "Claude did not return a structured review result."
           exit 1
 
-  # 構造化出力を Markdown に描画し、目印つきのコメントを 1 件に保つ（あれば更新、なければ作成）
+  # 構造化出力を Markdown に描画し、目印つきのコメントを毎回新規に投稿し、過去の目印つきコメントは OUTDATED として折りたたむ
   post-review-comment:
     needs: claude-review
     runs-on: ubuntu-latest
@@ -207,16 +207,28 @@ jobs:
           REVIEW_JSON: ${{ needs.claude-review.outputs.review }}
         run: printf '%s' "$REVIEW_JSON" | jq -r -f .github/dependabot-review/render-comment.jq > "$RUNNER_TEMP/comment.md"
 
-      - name: Upsert review comment
+      # 常に新規コメントを投稿し、その id を後続 step に渡す
+      - name: Post review comment
+        id: post_comment
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
-            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- dependabot-review -->"))) | .id' | head -n 1)
-          if [ -n "$comment_id" ]; then
-            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" -F body=@"$RUNNER_TEMP/comment.md" > /dev/null
-          else
-            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -F body=@"$RUNNER_TEMP/comment.md" > /dev/null
-          fi
+          comment_id=$(gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -F body=@"$RUNNER_TEMP/comment.md" --jq '.id')
+          echo "comment_id=$comment_id" >> "$GITHUB_OUTPUT"
+
+      # 新コメント以外の過去のレビューコメントのうち、未折りたたみのものを OUTDATED として折りたたむ
+      - name: Minimize previous review comments
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          NEW_COMMENT_ID: ${{ steps.post_comment.outputs.comment_id }}
+          MINIMIZE_COMMENT_QUERY: 'mutation($id: ID!) { minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) { minimizedComment { isMinimized } } }'
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+            | jq -r --argjson new_id "$NEW_COMMENT_ID" '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- dependabot-review -->")) and .id != $new_id and .minimized == null) | .node_id' \
+            | while read -r node_id; do
+                gh api graphql -f query="$MINIMIZE_COMMENT_QUERY" -f id="$node_id" > /dev/null
+              done
