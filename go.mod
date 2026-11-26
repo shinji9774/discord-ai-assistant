@@ -19,12 +19,12 @@ require (
 	github.com/disgoorg/disgo v0.20.0
 	github.com/disgoorg/snowflake/v2 v2.0.3
 	github.com/go-playground/validator/v10 v10.30.6
-	github.com/moby/moby/api v1.56.1
+	github.com/moby/moby/api v1.57.0
 	github.com/testcontainers/testcontainers-go v0.45.0
 	github.com/thomas-vilte/dave-go v0.5.2-0.20261110231643-912e81502610
 	github.com/tphakala/go-flac v1.4.0
 	github.com/tphakala/go-opus v1.4.0
-	go.yaml.in/yaml/v3 v3.0.5
+	go.yaml.in/yaml/v3 v3.0.6
 	golang.org/x/image v0.48.0
 )
 
