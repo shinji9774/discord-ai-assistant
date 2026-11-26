@@ -11,8 +11,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 依存の新しいコードを実行するのはこのジョブだけ。id-token を持つ claude-review ではテストを実行しない
+  # go が使えない Claude に代わって、決定的なスクリプトで事実（版の差、依存グラフの差、ソース差分、テスト結果）を集める
+  collect-facts:
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Collect facts
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: .github/dependabot-review/collect-facts.sh "$BASE_SHA" "$RUNNER_TEMP/review-facts"
+
+      - name: Upload facts
+        uses: actions/upload-artifact@v7
+        with:
+          name: review-facts
+          path: ${{ runner.temp }}/review-facts
+
   # Claude は読み取り専用のツールだけで調べ、構造化出力を返す。書き込み権限は持たせない
   claude-review:
+    needs: collect-facts
     # 作者も push した人も Dependabot のときだけ動く（人が devcontainer.json を直した push では動かない）
     if: github.event.pull_request.user.login == 'dependabot[bot]' && github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
@@ -44,6 +76,12 @@ jobs:
           gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" > "$CONTEXT_DIR/pr.diff"
           printf '%s\n' "$UPDATED_DEPENDENCIES" > "$CONTEXT_DIR/updated-dependencies.json"
 
+      - name: Download facts
+        uses: actions/download-artifact@v8
+        with:
+          name: review-facts
+          path: ${{ runner.temp }}/review-context/facts
+
       - name: Load review result schema
         id: schema
         run: echo "schema=$(jq -c . .github/dependabot-review/review-result.schema.json)" >> "$GITHUB_OUTPUT"
@@ -69,13 +107,32 @@ jobs:
             - PR 番号: ${{ github.event.pull_request.number }}
             - PR の差分: ${{ runner.temp }}/review-context/pr.diff
             - 更新された依存の一覧（dependabot/fetch-metadata の updated-dependencies-json）: ${{ runner.temp }}/review-context/updated-dependencies.json
+            - facts ディレクトリ（別ジョブが go コマンドで集めた事実。Claude は go を使えない）: ${{ runner.temp }}/review-context/facts
+              - module-changes.tsv: base と head の依存の比較（列: change, module, old, new。change は added・removed・changed）
+              - mod-graph.diff: base と head の `go mod graph` の unified diff。go.sum の行が増減した原因（どの依存の go.mod が変わったか）を辿る材料
+              - go.sum.diff: go.sum の差分
+              - source-diff/: 版が変わったモジュールごとのソース差分（ファイル名はモジュールパスの / を _ にしたもの。_test.go と testdata/ は除く）
+                - <module>.diff: このリポジトリが使うパッケージだけの差分
+                - <module>.files: モジュール全体の変更ファイル一覧（使っていない部分の変更も含む）
+              - affected-packages.tsv: 変わったモジュールに依存するこのリポジトリのパッケージ（列: module, package, build_tags。build_tags が integration のものは CI の integration テストで実行される）
+              - go-test.txt: affected-packages.tsv のうち build_tags が空のパッケージの `go test` の出力。末尾に終了コード。「no affected unit-test packages」ならテスト対象なし
 
             更新された依存ごとに次を調べ、dependencies に 1 件ずつ入れる。
-            1. changelog とリリースノート: WebFetch と WebSearch で、from から to までのすべての版を読む。読めた URL を changelog_url に入れ、changelog_found を true にする。どれも読めなければ changelog_found を false、changelog_url を空文字にし、破壊的変更がないとは書かない。
-            2. breaking_changes: 破壊的変更を「- 」で始まる箇条書きで書く。なければ「なし」。
+            1. changelog とリリースノート: from から to までのすべての版を、次の順に探す。
+               1. GitHub Release（WebFetch と WebSearch）
+               2. `https://github.com/<owner>/<repo>/compare/<old>...<new>`
+               3. リポジトリの CHANGELOG ファイル
+               4. facts/source-diff（該当モジュールの差分）
+               読めた URL を changelog_url に入れ、changelog_found を true にする。どれも読めなければ changelog_found を false、changelog_url を空文字にする。
+               facts/source-diff を読んで変更点を確かめたら source_diff_reviewed を true にする。読んでいなければ false にする。
+               changelog_found も source_diff_reviewed も false なら、破壊的変更がないとは書かない。
+            2. breaking_changes: 破壊的変更を「- 」で始まる箇条書きで書く。なければ「なし」。source-diff を根拠に書いてよい。その場合は根拠が source-diff であることを明記する。
             3. security_fixes: セキュリティ修正を CVE か GHSA の番号つきで書く。GitHub Advisory Database（https://github.com/advisories）も調べる。なければ「なし」。
             4. usages: 変更された API がリポジトリ内で使われている箇所を Grep で探し、「- path:line `識別子`」の箇条書きで書く。使われていなければ「なし」。
             5. license_change: ライセンスが変わったか。変わっていれば変更前と変更後を書く。変わっていなければ「変更なし」。
+            6. test_coverage: facts/affected-packages.tsv と facts/go-test.txt を使い、usages の箇所を動かしているテストを Read で読む。「- path:line `TestName`: 何を確かめているか（結果: 成功／失敗／CI の integration テストで実行）」の箇条書きで書く。結果は、build_tags が空のパッケージなら go-test.txt から、integration のパッケージなら「CI の integration テストで実行」とする。該当するテストがなければ「なし」。
+
+            依存ごとの調べものとは別に、トップレベルの graph_changes を書く。facts/module-changes.tsv と facts/mod-graph.diff から、Dependabot が直接更新した依存以外の変化（追加・削除・間接依存の版の変化）とその原因を「- module old→new: 原因」の箇条書きで書く。なければ「なし」。原因を説明できた変化は checks に入れない。説明できなかったものだけ checks に入れる。
 
             impacts（複数可）:
             - gomod: 更新された依存を使っているのが cmd/ か internal/ の _test.go 以外のファイルなら「本番のバイナリ」。_test.go だけなら「テストのみ」。
@@ -88,10 +145,12 @@ jobs:
             - 低: それ以外の更新。
             priority_reason に理由を 1 文で書く。
 
-            verdict（CI の結果は判定に含めない）:
-            - マージしてよい: 破壊的変更がリポジトリ内の使用箇所に影響せず、人が確認すべき点がない。changelog を読めなかった依存が 1 つでもあれば選ばない。
+            verdict（facts/go-test.txt のユニットテストの結果は含める。CI 全体の結果は含めない）:
+            - マージしてよい: 破壊的変更がリポジトリ内の使用箇所に影響せず、人が確認すべき点がない。changelog もソース差分も読めなかった依存が 1 つでもあれば選ばない。facts/go-test.txt の終了コードが 0 でなければ選ばない。
             - 確認が必要: 人が確かめるべき点がある。
             - 見送りを推奨: 破壊的変更がリポジトリ内の使用箇所を壊す、または更新先の版に既知の重大な問題がある。
+
+            facts/go-test.txt の終了コードが 0 でなければ、verdict は「確認が必要」以上にし、checks に失敗したテストを入れる。
 
             checks: verdict が「確認が必要」か「見送りを推奨」なら、人が確認すべき点を 1 件以上入れる。location には path:line か、changelog の URL と見出しを書く。「マージしてよい」なら空の配列にする。
 

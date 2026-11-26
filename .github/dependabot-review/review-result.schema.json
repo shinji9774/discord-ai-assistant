@@ -7,6 +7,7 @@
     "priority_reason",
     "impacts",
     "checks",
+    "graph_changes",
     "dependencies"
   ],
   "properties": {
@@ -51,6 +52,10 @@
         }
       }
     },
+    "graph_changes": {
+      "description": "Dependabot が直接更新した依存以外の依存グラフの変化（追加・削除・間接依存の版の変化）と原因の箇条書き（- module old→new: 原因）。なければ「なし」",
+      "type": "string"
+    },
     "dependencies": {
       "description": "更新された依存ごとの詳細",
       "type": "array",
@@ -67,7 +72,9 @@
           "breaking_changes",
           "security_fixes",
           "usages",
-          "license_change"
+          "license_change",
+          "source_diff_reviewed",
+          "test_coverage"
         ],
         "properties": {
           "name": { "description": "依存の名前", "type": "string" },
@@ -95,6 +102,14 @@
           },
           "license_change": {
             "description": "ライセンスの変更。変わっていなければ「変更なし」",
+            "type": "string"
+          },
+          "source_diff_reviewed": {
+            "description": "facts の source-diff を読んで変更点を確かめたか",
+            "type": "boolean"
+          },
+          "test_coverage": {
+            "description": "使用箇所を動かしているテストの箇条書き（- path:line `TestName`: 確かめている内容（結果: 成功／失敗／CI の integration テストで実行））。なければ「なし」",
             "type": "string"
           }
         }

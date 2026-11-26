@@ -4,6 +4,7 @@
   "priority_reason": "テストだけで使う依存の patch 更新",
   "impacts": ["テストのみ"],
   "checks": [],
+  "graph_changes": "なし",
   "dependencies": [
     {
       "name": "example.com/gamma",
@@ -14,7 +15,9 @@
       "breaking_changes": "なし",
       "security_fixes": "なし",
       "usages": "- internal/voicesummary/summary_test.go:18 `gamma.Equal`",
-      "license_change": "変更なし"
+      "license_change": "変更なし",
+      "source_diff_reviewed": false,
+      "test_coverage": "- internal/voicesummary/summary_test.go:18 `TestSummarize_Equal`: gamma.Equal で要約の比較が成り立つことを確かめている（結果: 成功）"
     }
   ]
 }

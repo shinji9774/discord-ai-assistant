@@ -10,6 +10,7 @@
       "location": "internal/discordapi/client.go:42"
     }
   ],
+  "graph_changes": "なし",
   "dependencies": [
     {
       "name": "example.com/alpha",
@@ -20,7 +21,9 @@
       "breaking_changes": "- Client.Do が *APIError ではなく error を返す",
       "security_fixes": "なし",
       "usages": "- internal/discordapi/client.go:42 `alpha.Client.Do`",
-      "license_change": "変更なし"
+      "license_change": "変更なし",
+      "source_diff_reviewed": true,
+      "test_coverage": "- internal/discordapi/client_test.go:55 `TestClient_Do_APIError`: Do が *APIError を返すことを確かめている（結果: 失敗）"
     },
     {
       "name": "example.com/beta",
@@ -31,7 +34,9 @@
       "breaking_changes": "なし",
       "security_fixes": "- GHSA-2c3m-7q9v-5f8h: 長い入力でパニックする",
       "usages": "なし",
-      "license_change": "MIT から Apache-2.0 に変更"
+      "license_change": "MIT から Apache-2.0 に変更",
+      "source_diff_reviewed": false,
+      "test_coverage": "なし"
     }
   ]
 }

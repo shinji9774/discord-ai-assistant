@@ -4,6 +4,7 @@
   "priority_reason": "本番のバイナリに効く major 更新を含む",
   "impacts": ["本番のバイナリ"],
   "checks": [],
+  "graph_changes": "なし",
   "dependencies": [
     {
       "name": "example.com/alpha",
@@ -14,7 +15,9 @@
       "breaking_changes": "- Client.Do が *APIError ではなく error を返す",
       "security_fixes": "なし",
       "usages": "- internal/discordapi/client.go:42 `alpha.Client.Do`",
-      "license_change": "変更なし"
+      "license_change": "変更なし",
+      "source_diff_reviewed": false,
+      "test_coverage": "なし"
     }
   ]
 }

@@ -4,6 +4,7 @@
   "priority_reason": "本番のバイナリに効く patch 更新で、セキュリティ修正は見つからなかった",
   "impacts": ["本番のバイナリ"],
   "checks": [],
+  "graph_changes": "なし",
   "dependencies": [
     {
       "name": "example.com/delta",
@@ -14,7 +15,9 @@
       "breaking_changes": "なし",
       "security_fixes": "なし",
       "usages": "- cmd/worker/main.go:30 `delta.New`",
-      "license_change": "変更なし"
+      "license_change": "変更なし",
+      "source_diff_reviewed": false,
+      "test_coverage": "なし"
     }
   ]
 }
