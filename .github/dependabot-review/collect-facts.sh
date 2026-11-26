@@ -264,7 +264,7 @@ function collect_affected_packages() {
   log_info "wrote ${AFFECTED_PACKAGES_FILE}"
 }
 
-# build_tags が空のパッケージだけを実行する。integration は Docker が要るので CI の make docker-test-it に任せる
+# build_tags が空のパッケージだけを実行する。integration は Docker が要るので CI の make test-it に任せる
 # テストが失敗しても結果を記録するだけで、このスクリプトは失敗させない
 function run_unit_tests() {
   local output_file="${OUT_DIR}/${GO_TEST_FILE}"

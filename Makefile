@@ -44,20 +44,26 @@ DOCKER_GO_RUN = docker run --rm \
 	-e TESTCONTAINERS_HOST_OVERRIDE=$(TESTCONTAINERS_HOST) \
 	$(GO_IMAGE)
 
-.PHONY: help vet test image image-it test-it it docker-test docker-test-it docker-lint docker-cache-volume register check-devcontainer-go test-review-comment
+# go が実行できればホストで、できなければ golang コンテナで実行する
+ifneq ($(shell go version >/dev/null 2>&1 && echo ok),ok)
+GO_RUN = $(DOCKER_GO_RUN)
+GO_RUN_DEPS = docker-cache-volume
+endif
+
+.PHONY: help vet test image image-it test-it it docker-cache-volume register check-devcontainer-go test-review-comment
 
 .DEFAULT_GOAL := help
 help:
 	@grep -hE "^[a-zA-Z_-]+:.*?## .*$$" $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m: %s\n", $$1, $$2}'
 
-vet: ## Run go vet
-	go vet ./...
+vet: $(GO_RUN_DEPS) ## Run go vet
+	$(GO_RUN) go vet ./...
 
-lint: ## Run actionlint
-	go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION) .github/workflows/*.yml
+lint: $(GO_RUN_DEPS) ## Run actionlint
+	$(GO_RUN) go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION) .github/workflows/*.yml
 
-test: ## Run go test
-	go test -v ./...
+test: $(GO_RUN_DEPS) ## Run go test
+	$(GO_RUN) go test -v ./...
 
 image-register: ## Build docker image for register
 	docker build --target register -t $(REGISTER_IMAGE) .
@@ -74,8 +80,8 @@ image-runtime: ## Build docker image for runtime
 image: image-runtime image-register image-it ## Build all docker images
 
 # イメージは事前に image-it か別の手段で作っておく
-test-it: ## Run integration test
-	IT_IMAGE=$(IT_IMAGE) go test -v -tags integration -count=1 ./test/integration/...
+test-it: $(GO_RUN_DEPS) ## Run integration test
+	IT_IMAGE=$(IT_IMAGE) $(GO_RUN) go test -v -tags integration -count=1 ./test/integration/...
 
 it: image-it test-it ## Build docker image for integration test and run integration test
 
@@ -86,16 +92,6 @@ docker-cache-volume: ## Create docker volume for go cache and set ownership to c
 
 docker-remove-cache-volume: ## Remove docker volume for go cache
 	docker volume rm $(GO_CACHE_VOLUME) >/dev/null 2>&1 || true
-
-docker-test: docker-cache-volume ## Run go vet and go test in docker container
-	$(DOCKER_GO_RUN) make vet test
-
-docker-lint: docker-cache-volume ## Run actionlint in docker container
-	$(DOCKER_GO_RUN) make lint
-
-# イメージは事前に make image-it でホスト側に作っておく
-docker-test-it: docker-cache-volume ## Run integration test in docker container
-	$(DOCKER_GO_RUN) make test-it
 
 check-devcontainer-go: ## Check devcontainer Go minor version matches Dockerfile build-base
 	@if [ -z "$(DOCKERFILE_GO_MINOR)" ]; then \

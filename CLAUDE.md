@@ -14,10 +14,10 @@ Go のバージョンの正は `Dockerfile` の `build-base` ステージの gol
 |---|---|
 | 静的解析 + 単体テスト | `make vet test` |
 | 結合テスト（IT イメージのビルド + 実行） | `make it`（= `make image-it test-it`） |
-| Go なしで単体テスト | `make docker-test` |
-| Go なしで結合テスト | `make image-it docker-test-it`（Linux の Docker Engine 専用。macOS の Docker Desktop では動かない） |
 | GitHub Actions ワークフローの lint | `make lint`（actionlint のみ。Go 用の linter は導入していない） |
 | Discord へのコマンド登録 | `make register`（SSM から bot トークンを取得する。aws CLI の認証が必要） |
+
+`vet` / `test` / `lint` / `test-it` は、ホストで `go version` が実行できなければ自動で golang コンテナで動く（Docker が必要。結合テストをコンテナ経由で動かせるのは Linux の Docker Engine のみ）。
 
 単一テストの実行:
 
@@ -28,7 +28,7 @@ go test -run '^TestExecute_RecordingAccepted_StoresTargetAudioAndStartsJobs$' ./
 go test -tags integration -count=1 -run '<テスト名>' ./test/integration/...
 ```
 
-CI（`.github/workflows/ci.yml`）は `test` ジョブで `make docker-test`、`make image-it docker-test-it`、`make image-runtime image-register` を、`lint` ジョブで `make check-devcontainer-go`、`make docker-lint`、`make test-review-comment` を実行する。Dependabot の PR には `.github/workflows/dependabot-review.yml` が Claude のレビューコメントを付ける。`v*.*.*` タグの push で `release.yml` が ECR へ push し、CloudFormation の change set を作る（実行は管理者が手動で行う）。テストが通ると `docs/` を GitHub Pages に公開する（`release` ジョブとは独立）。`release.yml` をタグを選んで手動実行すると、公開だけを行う。
+CI（`.github/workflows/ci.yml`）は `test` ジョブで `make vet test`、`make image-it test-it`、`make image-runtime image-register` を、`lint` ジョブで `make check-devcontainer-go`、`make lint`、`make test-review-comment` を実行する。Dependabot の PR には `.github/workflows/dependabot-review.yml` が Claude のレビューコメントを付ける。`v*.*.*` タグの push で `release.yml` が ECR へ push し、CloudFormation の change set を作る（実行は管理者が手動で行う）。テストが通ると `docs/` を GitHub Pages に公開する（`release` ジョブとは独立）。`release.yml` をタグを選んで手動実行すると、公開だけを行う。
 
 ## アーキテクチャ
 

@@ -17,11 +17,11 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v7
       - name: Run unit tests
-        run: make docker-test
+        run: make vet test
       - name: Build images
         run: make image
       - name: Run integration tests
-        run: make docker-test-it
+        run: make test-it
 
   lint:
     runs-on: ubuntu-latest
@@ -31,6 +31,6 @@ jobs:
       - name: Check devcontainer Go version
         run: make check-devcontainer-go
       - name: Lint workflows
-        run: make docker-lint
+        run: make lint
       - name: Test review comment rendering
         run: make test-review-comment

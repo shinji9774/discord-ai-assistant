@@ -429,7 +429,7 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
 
 自動テストをローカルで実行する。
 
-1. Go を入れる。バージョンは `Dockerfile` の `build-base` ステージの golang タグ（`golang:1.27.4`）に合わせる。`go.mod` の `go` 行は必要な最小バージョン。
+1. Go を入れる。バージョンは `Dockerfile` の `build-base` ステージの golang タグ（`golang:1.27.4`）に合わせる。`go.mod` の `go` 行は必要な最小バージョン。ホストで `go version` が実行できなければ、`make vet test lint test-it` は自動で golang コンテナ（Docker が必要）を使う。モジュールとビルドのキャッシュは名前付きボリュームに残る。
 
 2. 静的解析と単体テストを実行する。
 
@@ -443,17 +443,10 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
    make image-it
    ```
 
-4. 結合テストを実行する。実際の Discord と AWS には接続しない。3 と 4 は `make it` でまとめて実行できる。
+4. 結合テストを実行する。実際の Discord と AWS には接続しない。3 と 4 は `make it` でまとめて実行できる。コンテナ経由で動かすときは Linux の Docker Engine を使うこと。Makefile がソケットの gid を GNU の `stat -c %g` で取っており（macOS の `stat` では動かない）、コンテナを `--network host` で動かしているため（Docker Desktop ではホストのネットワークにならず、兄弟コンテナの公開ポートに localhost で届かない）。macOS の Docker Desktop などは対象外。
 
    ```sh
    make test-it
-   ```
-
-5. Go を入れずに golang コンテナで実行する場合（Docker が必要）。`make docker-test-it` は Linux の Docker Engine で動かすこと。Makefile がソケットの gid を GNU の `stat -c %g` で取っており（macOS の `stat` では動かない）、コンテナを `--network host` で動かしているため（Docker Desktop ではホストのネットワークにならず、兄弟コンテナの公開ポートに localhost で届かない）。macOS の Docker Desktop などは対象外。イメージは `Dockerfile` の `build-base` ステージの golang タグから決まる。モジュールとビルドのキャッシュは名前付きボリュームに残る。
-
-   ```sh
-   make docker-test
-   make image-it docker-test-it
    ```
 
 ## 依存の更新（Dependabot）
@@ -477,7 +470,7 @@ bot トークンは worker が起動時に読む。**リリース（「4. リリ
 - Go の patch 版の更新 PR（例: `1.27.4` → `1.27.5`）は、CI が通ればそのままマージできる。
 - Go の minor 版の更新 PR（例: `1.27.x` → `1.28.0`）では、CI の `lint` ジョブの `make check-devcontainer-go` が失敗する。`.devcontainer/devcontainer.json` の `image` を `mcr.microsoft.com/devcontainers/go:2-1.28-trixie` のように直し、PR のブランチに push する。CI がすべてやり直される（この push では Claude のレビューは動かない）。
 - Go を手で上げるときは、`Dockerfile` の 1 行目のタグを書き換える。minor が変わるなら `devcontainer.json` も直す。
-- `go.mod` の `go` 行は、必要な最小バージョン。Go の更新に合わせて上げない。上げるときは `go` 行を書き換え、`make docker-test` で確かめる。`Dockerfile` のタグの Go より新しくはできない（golang イメージは `GOTOOLCHAIN=local` なので、ビルドとテストが失敗する）。
+- `go.mod` の `go` 行は、必要な最小バージョン。Go の更新に合わせて上げない。上げるときは `go` 行を書き換え、`make vet test` で確かめる。`Dockerfile` のタグの Go より新しくはできない（golang イメージは `GOTOOLCHAIN=local` なので、ビルドとテストが失敗する）。
 - 依存の更新が新しい Go を要求して CI が失敗したときは、Go の更新 PR を先にマージしてから（または `Dockerfile` のタグを手で上げてから）、依存の PR に `@dependabot rebase` とコメントして CI をやり直す。
 
 ### Claude のレビューコメント
@@ -505,4 +498,4 @@ Dependabot が PR を作ったとき、または更新したとき（rebase や�
 
 ### actionlint の版
 
-`make lint` の actionlint は、Makefile の `ACTIONLINT_VERSION` で版を固定している。上げるときはこの変数を書き換える。`make docker-lint` は Go を入れずに golang コンテナで実行する。
+`make lint` の actionlint は、Makefile の `ACTIONLINT_VERSION` で版を固定している。上げるときはこの変数を書き換える。ホストで go が実行できなければ、自動で golang コンテナで実行する。
