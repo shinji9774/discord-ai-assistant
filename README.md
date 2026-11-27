@@ -28,6 +28,8 @@ Discord の slash command から Amazon Translate と AWS Bedrock（Amazon Nova 
 - AWS リージョンは `ap-northeast-1`。ただし `/image` の画像生成モデルは `us-west-2` を使う。
 - `/image` に渡した文章と画像は米国リージョン（`us-west-2`、`us-east-1`、`us-east-2`）へ送られる。Stable Image Core のデータは `us-west-2`、Control Sketch のデータは `us-east-1`、`us-east-2`、`us-west-2` のいずれかへ送られる。
 
+![discord-ai-assistant の構成図](architecture.drawio.svg)
+
 ### `/image` の注意点
 
 - 生成できるのは図（図解・模式図、フローチャート・構成図、アイコン・ピクトグラム・ロゴ）だけ。写真、イラスト、グラフ・チャートなど、図以外を求める依頼は断られる。

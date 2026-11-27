@@ -81,6 +81,41 @@ package by feature。`internal/` 直下は機能パッケージ（`ask`, `transl
 6. 引き渡し前の失敗（参加、保存など）で exit 1 になると、ECS の STOPPED を受けた recordingfailure が後始末をする。投稿が失敗した場合だけエラーを返して Lambda の再試行に任せ、ロック解除の失敗は Warn にとどめる。
 7. recorder が引き渡しまで終えて exit 0 で止まった場合（ロック解除に失敗してロックが残ったとき）は、recordingfailure は STOPPED の `containers[]` の exit code 0 でそれを見分け、音声を消さず投稿もせず、ロックだけを外す。ロック解除の失敗はエラーにして再試行に任せる（投稿が無いので重複しない）。
 
+## 構成図
+
+構成図は draw.io の `.drawio.svg` で 2 枚ある。SVG に埋め込んだダイアグラム定義（`content` 属性）が原本で、生成スクリプトは無い。
+
+- `architecture.drawio.svg`: 管理者向けの詳細版。`README.md` の「構成」節が参照する。
+- `docs/images/how-it-works.drawio.svg`: 利用者向けの簡潔版。`docs/how-it-works.md` が参照する。
+
+`cfn/` のリソース、コマンドの処理の流れ、データの送信先や保存期間を変えたら、詳細版を直す。利用者に見える送信先や保存期間が変わるときは、簡潔版と `docs/how-it-works.md`・`docs/privacy.md` も直す。
+
+AWS アイコンは draw.io 内蔵の `mxgraph.aws4` を使う。名前と色は jgraph/drawio の `src/main/webapp/js/diagramly/sidebar/Sidebar-AWS4.js` の定義に合わせる。
+
+draw.io の画面（VS Code 拡張やデスクトップ版）で開いて、編集・保存してもよい。CLI で直すときは、docker イメージ `rlespinasse/drawio-desktop-headless`（確認時は draw.io 32.7.4）を使う。
+
+```sh
+W=$(mktemp -d)
+# 1. 原本から mxfile を取り出す
+python3 -I -c "import re,html,sys; s=open(sys.argv[1],encoding='utf-8').read(); open(sys.argv[2],'w',encoding='utf-8').write(html.unescape(re.search(r' content=\"([^\"]*)\"',s).group(1)))" architecture.drawio.svg "$W/work.drawio"
+# 2. $W/work.drawio の mxCell を編集する
+# 3. SVG を書き出す
+docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp --shm-size=1g -v "$W:/data" rlespinasse/drawio-desktop-headless -x -f svg --embed-diagram --embed-svg-fonts false -o /data/out.drawio.svg /data/work.drawio
+# 4. 目視確認用の PNG を書き出す（コミットしない）
+docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp --shm-size=1g -v "$W:/data" rlespinasse/drawio-desktop-headless -x -f png -o /data/check.png /data/work.drawio
+# 5. 確認して反映する
+grep -c 'data:image/png' "$W/out.drawio.svg"   # 0 であること
+grep -c ' content="' "$W/out.drawio.svg"       # 1 であること
+cp "$W/out.drawio.svg" architecture.drawio.svg
+rm -rf "$W"
+```
+
+- `--shm-size=1g` が無いと、Chromium の共有メモリが足りず `Renderer process crashed` で失敗する。
+- `--embed-svg-fonts false` が無いと、ラベルが PNG 画像として埋め込まれ、ファイルが約 1MB になる。
+- `--embed-diagram` が無いと原本が埋め込まれず、再編集できなくなる。
+- 書き出すたびに `<svg>` の `id` が変わる。図を変えていないときは書き出し直さない。
+- この headless 版では `mxgraph.aws4.object` が円で描かれる。S3 の中身には `bucket` 系の図形を使う。
+
 ## テスト
 
 - テスト名は `Test<対象>_<条件>_<期待>` の形式。
